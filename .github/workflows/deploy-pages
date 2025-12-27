@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - 'packages/landing/**'
-      - 'packages/mobile/src/web/**'
-      - 'packages/icons/**'
+      - 'audiio/packages/landing/**'
+      - 'audiio/packages/mobile/src/web/**'
+      - 'audiio/packages/icons/**'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
