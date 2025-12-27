@@ -51,7 +51,8 @@
       "Bash(git commit:*)",
       "Bash(git mv:*)",
       "Bash(mkdir:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

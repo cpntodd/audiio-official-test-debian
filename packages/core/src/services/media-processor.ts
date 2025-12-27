@@ -77,7 +77,7 @@ export class MediaProcessor {
     this.ffmpegAvailable = await new Promise<boolean>((resolve) => {
       const ffmpeg = spawn('ffmpeg', ['-version']);
 
-      ffmpeg.on('close', (code) => {
+      ffmpeg.on('close', (code: number | null) => {
         resolve(code === 0);
       });
 
@@ -295,15 +295,15 @@ export class MediaProcessor {
       let stdout = '';
       let stderr = '';
 
-      ffprobe.stdout.on('data', (data) => {
+      ffprobe.stdout.on('data', (data: Buffer) => {
         stdout += data.toString();
       });
 
-      ffprobe.stderr.on('data', (data) => {
+      ffprobe.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
       });
 
-      ffprobe.on('close', (code) => {
+      ffprobe.on('close', (code: number | null) => {
         if (code !== 0) {
           reject(new Error(`ffprobe failed: ${stderr}`));
           return;
@@ -326,7 +326,7 @@ export class MediaProcessor {
         }
       });
 
-      ffprobe.on('error', (err) => {
+      ffprobe.on('error', (err: Error) => {
         reject(new Error(`Failed to run ffprobe: ${err.message}`));
       });
     });
@@ -344,7 +344,7 @@ export class MediaProcessor {
       const ffmpeg = spawn('ffmpeg', ['-loglevel', 'info', '-progress', 'pipe:1', ...args]);
 
       let stderr = '';
-      let timeoutId: NodeJS.Timeout | undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
       if (timeout > 0) {
         timeoutId = setTimeout(() => {
@@ -353,19 +353,19 @@ export class MediaProcessor {
         }, timeout);
       }
 
-      ffmpeg.stdout.on('data', (data) => {
+      ffmpeg.stdout.on('data', (data: Buffer) => {
         if (onProgress) {
           const output = data.toString();
           const progress: FFmpegProgress = {};
 
           const frameMatch = output.match(/frame=(\d+)/);
-          if (frameMatch) progress.frame = parseInt(frameMatch[1]);
+          if (frameMatch?.[1]) progress.frame = parseInt(frameMatch[1]);
 
           const timeMatch = output.match(/out_time=([^\n]+)/);
-          if (timeMatch) progress.time = timeMatch[1].trim();
+          if (timeMatch?.[1]) progress.time = timeMatch[1].trim();
 
           const speedMatch = output.match(/speed=([^\n]+)/);
-          if (speedMatch) progress.speed = speedMatch[1].trim();
+          if (speedMatch?.[1]) progress.speed = speedMatch[1].trim();
 
           if (Object.keys(progress).length > 0) {
             onProgress(progress);
@@ -373,11 +373,11 @@ export class MediaProcessor {
         }
       });
 
-      ffmpeg.stderr.on('data', (data) => {
+      ffmpeg.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
       });
 
-      ffmpeg.on('close', (code) => {
+      ffmpeg.on('close', (code: number | null) => {
         if (timeoutId) clearTimeout(timeoutId);
 
         if (code === 0) {
@@ -387,7 +387,7 @@ export class MediaProcessor {
         }
       });
 
-      ffmpeg.on('error', (err) => {
+      ffmpeg.on('error', (err: Error) => {
         if (timeoutId) clearTimeout(timeoutId);
         reject(new Error(`Failed to start FFmpeg: ${err.message}. Is FFmpeg installed?`));
       });
