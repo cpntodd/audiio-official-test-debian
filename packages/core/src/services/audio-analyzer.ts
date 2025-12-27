@@ -71,7 +71,7 @@ export class AudioAnalyzer {
 
     this.ffmpegAvailable = await new Promise<boolean>((resolve) => {
       const ffmpeg = spawn('ffmpeg', ['-version']);
-      ffmpeg.on('close', (code) => resolve(code === 0));
+      ffmpeg.on('close', (code: number | null) => resolve(code === 0));
       ffmpeg.on('error', () => resolve(false));
     });
 
@@ -238,9 +238,9 @@ export class AudioAnalyzer {
       const ffmpeg = spawn('ffmpeg', args);
       const chunks: Buffer[] = [];
 
-      ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+      ffmpeg.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
 
-      ffmpeg.on('close', (code) => {
+      ffmpeg.on('close', (code: number | null) => {
         if (code !== 0 || chunks.length === 0) {
           resolve(null);
           return;
@@ -297,9 +297,9 @@ export class AudioAnalyzer {
       const ffmpeg = spawn('ffmpeg', args);
       const chunks: Buffer[] = [];
 
-      ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+      ffmpeg.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
 
-      ffmpeg.on('close', (code) => {
+      ffmpeg.on('close', (code: number | null) => {
         if (code !== 0 || chunks.length === 0) {
           resolve(null);
           return;
