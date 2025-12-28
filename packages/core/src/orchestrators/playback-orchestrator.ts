@@ -53,8 +53,15 @@ export class PlaybackOrchestrator extends EventEmitter<PlaybackEvents> {
    * Play a specific track
    */
   async play(track: UnifiedTrack): Promise<StreamInfo> {
-    // Resolve stream if not already resolved
-    if (!track.streamInfo) {
+    // Check if this is a local track (local tracks have stable file:// URLs that don't expire)
+    const isLocalTrack = track.id.startsWith('local:') ||
+      track._meta?.metadataProvider === 'local-file' ||
+      track.streamInfo?.url?.startsWith('local-audio://') ||
+      track.streamInfo?.url?.startsWith('file://');
+
+    // Always resolve streams for remote tracks - YouTube URLs expire quickly
+    // Only skip resolution for local tracks with existing streamInfo
+    if (!isLocalTrack || !track.streamInfo) {
       const streamInfo = await this.resolver.resolveStream(track);
       if (!streamInfo) {
         const error = new Error(`Could not resolve stream for: ${track.title}`);

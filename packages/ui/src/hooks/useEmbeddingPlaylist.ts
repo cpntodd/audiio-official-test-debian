@@ -401,6 +401,7 @@ export function useEmbeddingPlaylist() {
 
   /**
    * Convert playlist result to UnifiedTrack array
+   * IMPORTANT: Clears stale streamInfo/streamSources so TrackResolver fetches fresh streams
    */
   const getTracksFromPlaylist = useCallback((
     playlist: GeneratedPlaylist | null
@@ -408,7 +409,18 @@ export function useEmbeddingPlaylist() {
     if (!playlist) return [];
 
     return playlist.tracks
-      .map((pt) => sharedTrackCache.get(pt.trackId))
+      .map((pt) => {
+        const cached = sharedTrackCache.get(pt.trackId);
+        if (!cached) return undefined;
+
+        // Clear stale stream info - forces TrackResolver to get fresh streams on play
+        // YouTube stream URLs expire, so cached streamInfo causes 403 errors
+        return {
+          ...cached,
+          streamInfo: undefined,
+          streamSources: [],
+        };
+      })
       .filter((t): t is UnifiedTrack => t !== undefined);
   }, []);
 
@@ -575,10 +587,15 @@ export function useSimilarTracks(
   }, [seedTrackId, isReady, findSimilarTracks, limit]);
 
   const tracksWithData = result
-    .map((pt) => ({
-      ...pt,
-      track: trackCache.current.get(pt.trackId),
-    }))
+    .map((pt) => {
+      const cached = trackCache.current.get(pt.trackId);
+      if (!cached) return { ...pt, track: undefined };
+      // Clear stale stream info to force fresh resolution
+      return {
+        ...pt,
+        track: { ...cached, streamInfo: undefined, streamSources: [] },
+      };
+    })
     .filter((t) => t.track !== undefined);
 
   return { similar: tracksWithData };

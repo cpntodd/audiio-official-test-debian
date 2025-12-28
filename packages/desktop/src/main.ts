@@ -588,6 +588,32 @@ function setupIPCHandlers(): void {
     }
   });
 
+  // Prefetch tracks - pre-resolve streams for upcoming queue tracks
+  ipcMain.handle('prefetch-tracks', async (_event, tracks: any[]) => {
+    try {
+      if (!tracks || tracks.length === 0) {
+        return {};
+      }
+
+      console.log(`[Prefetch] Pre-resolving ${tracks.length} tracks`);
+      const results = await trackResolver.resolveStreamsForTracks(tracks);
+
+      // Convert Map to plain object for IPC serialization
+      const serialized: Record<string, any> = {};
+      results.forEach((streamInfo, trackId) => {
+        if (streamInfo) {
+          serialized[trackId] = streamInfo;
+        }
+      });
+
+      console.log(`[Prefetch] Resolved ${Object.keys(serialized).length}/${tracks.length} streams`);
+      return serialized;
+    } catch (error) {
+      console.error('Prefetch tracks error:', error);
+      return {};
+    }
+  });
+
   // Artist latest release
   ipcMain.handle('get-artist-latest-release', async (_event, { artistId, source }: { artistId: string; source?: string }) => {
     try {
@@ -1797,21 +1823,222 @@ function setupIPCHandlers(): void {
 }
 
 /**
- * Download a file from URL with progress updates
+ * Download a file from URL with progress updates using chunked Range requests
+ * YouTube/Google CDN requires Range requests for adaptive streams
  */
-function downloadFile(url: string, filePath: string, onProgress: (progress: number) => void): Promise<void> {
+async function downloadFile(url: string, filePath: string, onProgress: (progress: number) => void): Promise<void> {
+  const tempPath = filePath + '.tmp';
+  const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+  const IDLE_TIMEOUT_MS = 30000;
+
+  // First, get the total file size with a HEAD request
+  const totalSize = await getContentLength(url);
+  console.log(`[Download] Total size: ${totalSize} bytes`);
+
+  if (totalSize === 0) {
+    // Fall back to non-chunked download if we can't get size
+    return downloadFileSimple(url, filePath, onProgress);
+  }
+
+  // Create/truncate the temp file
+  const file = fs.createWriteStream(tempPath);
+
+  let downloadedSize = 0;
+
+  try {
+    // Download in chunks using Range requests
+    while (downloadedSize < totalSize) {
+      const start = downloadedSize;
+      const end = Math.min(downloadedSize + CHUNK_SIZE - 1, totalSize - 1);
+
+      console.log(`[Download] Fetching chunk: bytes ${start}-${end}/${totalSize}`);
+
+      const chunk = await downloadChunk(url, start, end, IDLE_TIMEOUT_MS);
+      file.write(chunk);
+
+      downloadedSize += chunk.length;
+      const progress = Math.round((downloadedSize / totalSize) * 100);
+      onProgress(progress);
+    }
+
+    // Close the file and rename
+    await new Promise<void>((resolve, reject) => {
+      file.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    await fs.promises.rename(tempPath, filePath);
+    console.log(`[Download] Complete: ${filePath}`);
+  } catch (error) {
+    file.close(() => {});
+    try { await fs.promises.unlink(tempPath); } catch {}
+    throw error;
+  }
+}
+
+/**
+ * Get content length via HEAD request
+ */
+function getContentLength(url: string): Promise<number> {
+  return new Promise((resolve) => {
+    const parsedUrl = new URL(url);
+    const protocol = parsedUrl.protocol === 'https:' ? https : http;
+
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'HEAD',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://music.youtube.com/',
+        'Origin': 'https://music.youtube.com'
+      }
+    };
+
+    const request = protocol.request(requestOptions, (response) => {
+      // Follow redirects
+      if ((response.statusCode === 301 || response.statusCode === 302) && response.headers.location) {
+        getContentLength(response.headers.location).then(resolve);
+        return;
+      }
+      const length = parseInt(response.headers['content-length'] || '0', 10);
+      resolve(length);
+    });
+
+    request.on('error', () => resolve(0));
+    request.setTimeout(10000, () => {
+      request.destroy();
+      resolve(0);
+    });
+    request.end();
+  });
+}
+
+/**
+ * Download a single chunk using Range request
+ */
+function downloadChunk(url: string, start: number, end: number, timeoutMs: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const protocol = url.startsWith('https') ? https : http;
+    const parsedUrl = new URL(url);
+    const protocol = parsedUrl.protocol === 'https:' ? https : http;
+
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity',
+        'Connection': 'keep-alive',
+        'Referer': 'https://music.youtube.com/',
+        'Origin': 'https://music.youtube.com',
+        'Range': `bytes=${start}-${end}`
+      }
+    };
+
+    const chunks: Buffer[] = [];
+    let idleTimeout: NodeJS.Timeout | null = null;
+
+    const resetTimeout = () => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        request.destroy();
+        reject(new Error('Download chunk timeout'));
+      }, timeoutMs);
+    };
+
+    const clearTimeout2 = () => {
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+        idleTimeout = null;
+      }
+    };
+
+    const request = protocol.request(requestOptions, (response) => {
+      // Follow redirects
+      if ((response.statusCode === 301 || response.statusCode === 302) && response.headers.location) {
+        clearTimeout2();
+        downloadChunk(response.headers.location, start, end, timeoutMs).then(resolve).catch(reject);
+        return;
+      }
+
+      // Accept 200 (full content) or 206 (partial content)
+      if (response.statusCode !== 200 && response.statusCode !== 206) {
+        clearTimeout2();
+        reject(new Error(`HTTP ${response.statusCode}`));
+        return;
+      }
+
+      resetTimeout();
+
+      response.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        resetTimeout();
+      });
+
+      response.on('end', () => {
+        clearTimeout2();
+        resolve(Buffer.concat(chunks));
+      });
+
+      response.on('error', (err) => {
+        clearTimeout2();
+        reject(err);
+      });
+    });
+
+    request.on('error', (err) => {
+      clearTimeout2();
+      reject(err);
+    });
+
+    request.setTimeout(timeoutMs, () => {
+      clearTimeout2();
+      request.destroy();
+      reject(new Error('Connection timeout'));
+    });
+
+    request.end();
+  });
+}
+
+/**
+ * Simple non-chunked download fallback
+ */
+function downloadFileSimple(url: string, filePath: string, onProgress: (progress: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const protocol = parsedUrl.protocol === 'https:' ? https : http;
     const tempPath = filePath + '.tmp';
 
-    const request = protocol.get(url, (response) => {
-      // Handle redirects
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity',
+        'Referer': 'https://music.youtube.com/',
+        'Origin': 'https://music.youtube.com'
+      }
+    };
+
+    const request = protocol.request(requestOptions, (response) => {
       if (response.statusCode === 301 || response.statusCode === 302) {
-        const redirectUrl = response.headers.location;
-        if (redirectUrl) {
-          downloadFile(redirectUrl, filePath, onProgress).then(resolve).catch(reject);
-          return;
+        if (response.headers.location) {
+          downloadFileSimple(response.headers.location, filePath, onProgress).then(resolve).catch(reject);
+        } else {
+          reject(new Error('Redirect without location'));
         }
+        return;
       }
 
       if (response.statusCode !== 200) {
@@ -1821,14 +2048,12 @@ function downloadFile(url: string, filePath: string, onProgress: (progress: numb
 
       const totalSize = parseInt(response.headers['content-length'] || '0', 10);
       let downloadedSize = 0;
-
       const file = fs.createWriteStream(tempPath);
 
       response.on('data', (chunk: Buffer) => {
         downloadedSize += chunk.length;
         if (totalSize > 0) {
-          const progress = Math.round((downloadedSize / totalSize) * 100);
-          onProgress(progress);
+          onProgress(Math.round((downloadedSize / totalSize) * 100));
         }
       });
 
@@ -1836,32 +2061,30 @@ function downloadFile(url: string, filePath: string, onProgress: (progress: numb
 
       file.on('finish', () => {
         file.close(() => {
-          // Rename temp file to final path
           fs.rename(tempPath, filePath, (err) => {
-            if (err) {
-              reject(err);
-            } else {
-              resolve();
-            }
+            if (err) reject(err);
+            else resolve();
           });
         });
       });
 
       file.on('error', (err) => {
-        fs.unlink(tempPath, () => {}); // Delete temp file on error
+        fs.unlink(tempPath, () => {});
         reject(err);
       });
     });
 
     request.on('error', (err) => {
-      fs.unlink(tempPath, () => {}); // Delete temp file on error
+      fs.unlink(tempPath, () => {});
       reject(err);
     });
 
     request.setTimeout(30000, () => {
       request.destroy();
-      reject(new Error('Download timeout'));
+      reject(new Error('Connection timeout'));
     });
+
+    request.end();
   });
 }
 

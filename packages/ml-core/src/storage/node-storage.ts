@@ -1,18 +1,19 @@
 /**
  * Node Storage - File-based storage adapter for Node.js/Electron main process
  *
- * Provides a localStorage-like API backed by the file system.
+ * This file uses Node.js built-in modules (fs, path) and should only be
+ * imported in Node.js environments. For browser environments, use the
+ * exports from the main package entry point instead.
+ *
+ * Import this via: import { NodeStorage } from '@audiio/ml-core/node';
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { StorageAdapter } from './browser-storage';
 
-export interface StorageAdapter {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-  clear(): void;
-}
+// Re-export StorageAdapter type for convenience
+export type { StorageAdapter } from './browser-storage';
 
 /**
  * File-based storage for Node.js environments
@@ -112,80 +113,8 @@ export class NodeStorage implements StorageAdapter {
 }
 
 /**
- * Browser storage adapter (wraps localStorage)
+ * Create storage adapter for Node.js environment
  */
-export class BrowserStorage implements StorageAdapter {
-  getItem(key: string): string | null {
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      return null;
-    }
-  }
-
-  setItem(key: string, value: string): void {
-    try {
-      localStorage.setItem(key, value);
-    } catch (error) {
-      console.warn('[BrowserStorage] Failed to set item:', error);
-    }
-  }
-
-  removeItem(key: string): void {
-    try {
-      localStorage.removeItem(key);
-    } catch (error) {
-      console.warn('[BrowserStorage] Failed to remove item:', error);
-    }
-  }
-
-  clear(): void {
-    try {
-      localStorage.clear();
-    } catch (error) {
-      console.warn('[BrowserStorage] Failed to clear:', error);
-    }
-  }
-}
-
-/**
- * In-memory storage (for testing or when no persistence needed)
- */
-export class MemoryStorage implements StorageAdapter {
-  private data = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.data.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.data.set(key, value);
-  }
-
-  removeItem(key: string): void {
-    this.data.delete(key);
-  }
-
-  clear(): void {
-    this.data.clear();
-  }
-}
-
-/**
- * Create appropriate storage adapter based on environment
- */
-export function createStorage(storagePath?: string): StorageAdapter {
-  // Check if we're in Node.js (Electron main process)
-  if (typeof window === 'undefined' && storagePath) {
-    return new NodeStorage(storagePath);
-  }
-
-  // Check if localStorage is available (browser/renderer)
-  if (typeof localStorage !== 'undefined') {
-    return new BrowserStorage();
-  }
-
-  // Fallback to memory storage
-  console.warn('[Storage] No persistent storage available, using memory storage');
-  return new MemoryStorage();
+export function createNodeStorage(storagePath: string, filename?: string): StorageAdapter {
+  return new NodeStorage(storagePath, filename);
 }

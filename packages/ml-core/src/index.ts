@@ -53,14 +53,13 @@ export { EventRecorder } from './learning/event-recorder';
 export { PreferenceStore } from './learning/preference-store';
 export { TrainingScheduler } from './learning/training-scheduler';
 
-// Storage
+// Storage (browser-safe only - for NodeStorage use '@audiio/ml-core/node')
 export {
-  NodeStorage,
   BrowserStorage,
   MemoryStorage,
   createStorage,
   type StorageAdapter,
-} from './storage/node-storage';
+} from './storage/browser-storage';
 
 // Queue
 export { SmartQueue } from './queue/smart-queue';

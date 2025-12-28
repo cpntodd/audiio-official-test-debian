@@ -119,6 +119,7 @@ declare global {
       getTrending?: () => Promise<TrendingContent>;
       getSimilarAlbums?: (albumId: string, source?: string) => Promise<Album[]>;
       getSimilarTracks?: (trackId: string, source?: string) => Promise<UnifiedTrack[]>;
+      prefetchTracks?: (tracks: UnifiedTrack[]) => Promise<Record<string, StreamInfo | null>>;
       getArtistLatestRelease?: (artistId: string, source?: string) => Promise<Album | null>;
       getRecommendedTracks?: (basedOn: 'artist' | 'genre', id: string) => Promise<UnifiedTrack[]>;
 
