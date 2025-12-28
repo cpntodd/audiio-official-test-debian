@@ -15,7 +15,9 @@
   "dependencies": {
     "@audiio/core": "*",
     "@audiio/sdk": "*",
-    "@audiio/mobile": "*",
+    "@audiio/mobile": "*"
+  },
+  "optionalDependencies": {
     "@audiio/deezer-metadata": "*",
     "@audiio/youtube-music": "*",
     "@audiio/applemusic-artwork": "*",

@@ -15,6 +15,7 @@ export class TrackResolver {
 
   /**
    * Resolve stream for a track from available providers
+   * Returns null if no stream provider is available (graceful degradation)
    */
   async resolveStream(
     track: UnifiedTrack,
@@ -25,7 +26,8 @@ export class TrackResolver {
     console.log('[TrackResolver] Available stream providers:', providers.map(p => p.id));
 
     if (providers.length === 0) {
-      throw new Error('No stream provider available');
+      console.warn('[TrackResolver] No stream provider available - cannot resolve stream');
+      return null;
     }
 
     // Ensure streamSources is initialized

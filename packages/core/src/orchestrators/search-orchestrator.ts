@@ -31,12 +31,20 @@ export class SearchOrchestrator {
   /**
    * Search for tracks across metadata providers
    * Returns unified tracks ready for playback
+   * Returns empty results if no provider is available (graceful degradation)
    */
   async search(query: string, options?: MetadataSearchOptions): Promise<SearchResult> {
     const provider = this.registry.getPrimaryMetadataProvider();
 
     if (!provider) {
-      throw new Error('No metadata provider available');
+      console.warn('[SearchOrchestrator] No metadata provider available - returning empty results');
+      return {
+        tracks: [],
+        albums: [],
+        artists: [],
+        query,
+        source: 'none'
+      };
     }
 
     const result = await provider.search(query, options);

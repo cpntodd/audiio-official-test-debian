@@ -18,12 +18,8 @@ import {
   type AudioFeatures,
   type AnalysisOptions
 } from '@audiio/core';
-import { DeezerMetadataProvider } from '@audiio/deezer-metadata';
-import { YouTubeMusicProvider } from '@audiio/youtube-music';
-import { AppleMusicArtworkProvider } from '@audiio/applemusic-artwork';
-import { LRCLibProvider } from '@audiio/lrclib-lyrics';
-import { KaraokeProcessor } from '@audiio/karaoke';
 import { getLibraryBridge, type LibraryBridge } from './services/library-bridge';
+import { PluginLoader } from './services/plugin-loader';
 import { mlService } from './services/ml-service';
 
 // Sposify addon - lazy loaded
@@ -32,8 +28,8 @@ let sposifyHandlersRegistered = false;
 // Demucs server process
 let demucsProcess: ChildProcess | null = null;
 
-// Karaoke processor
-let karaokeProcessor: KaraokeProcessor;
+// Plugin loader
+let pluginLoader: PluginLoader;
 
 // Mobile server - lazy loaded
 let MobileServer: any = null;
@@ -64,11 +60,6 @@ let playbackOrchestrator: PlaybackOrchestrator;
 let metadataOrchestrator: MetadataOrchestrator;
 let libraryBridge: LibraryBridge;
 
-// Store provider references for settings updates
-let deezerProvider: DeezerMetadataProvider;
-let appleMusicProvider: AppleMusicArtworkProvider;
-let lrclibProvider: LRCLibProvider;
-
 // Audio analyzer instance
 const audioAnalyzer = getAudioAnalyzer();
 
@@ -80,51 +71,41 @@ let pluginFolderWatcher: fs.FSWatcher | null = null;
 let currentPluginFolder: string | null = null;
 
 /**
- * Initialize addon providers
+ * Initialize addon providers using dynamic plugin loading
  */
 async function initializeAddons(): Promise<void> {
   registry = new AddonRegistry();
+  pluginLoader = new PluginLoader(registry);
 
-  // Initialize Deezer metadata provider
-  deezerProvider = new DeezerMetadataProvider();
-  await deezerProvider.initialize();
-  registry.register(deezerProvider);
+  console.log('[Plugins] Starting dynamic plugin discovery...');
 
-  // Initialize Apple Music artwork provider
-  appleMusicProvider = new AppleMusicArtworkProvider();
-  await appleMusicProvider.initialize();
-  registry.register(appleMusicProvider);
-  // Enabled by default for animated artwork support
+  // Load all available plugins (official + user-installed)
+  const results = await pluginLoader.loadAllPlugins();
 
-  // Initialize YouTube Music stream provider
-  const ytMusic = new YouTubeMusicProvider();
-  await ytMusic.initialize();
-  registry.register(ytMusic);
+  const loaded = results.filter(r => r.success);
+  const failed = results.filter(r => !r.success);
 
-  // Initialize LRCLib lyrics provider
-  lrclibProvider = new LRCLibProvider();
-  await lrclibProvider.initialize();
-  registry.register(lrclibProvider);
+  console.log(`[Plugins] Loaded ${loaded.length} plugins, ${failed.length} not available`);
 
-  // Create orchestrators
+  // Create orchestrators (they handle empty registry gracefully)
   searchOrchestrator = new SearchOrchestrator(registry);
   trackResolver = new TrackResolver(registry);
   playbackOrchestrator = new PlaybackOrchestrator(trackResolver);
   metadataOrchestrator = new MetadataOrchestrator(registry);
 
-  // Initialize Karaoke processor
-  karaokeProcessor = new KaraokeProcessor();
-  await karaokeProcessor.initialize();
-  registry.register(karaokeProcessor);
+  // Set up karaoke event forwarding if karaoke plugin is loaded
+  const karaokePlugin = pluginLoader.getPlugin('karaoke');
+  if (karaokePlugin && karaokePlugin.instance) {
+    const karaokeInstance = karaokePlugin.instance as any;
+    if (typeof karaokeInstance.onFullTrackReady === 'function') {
+      karaokeInstance.onFullTrackReady((trackId: string, result: any) => {
+        console.log(`[Karaoke] Forwarding full track ready event to renderer: ${trackId}`);
+        mainWindow?.webContents.send('karaoke-full-track-ready', { trackId, result });
+      });
+    }
+  }
 
-  // Subscribe to full track ready events and forward to renderer
-  // This enables push notification instead of polling
-  karaokeProcessor.onFullTrackReady((trackId, result) => {
-    console.log(`[Karaoke] Forwarding full track ready event to renderer: ${trackId}`);
-    mainWindow?.webContents.send('karaoke-full-track-ready', { trackId, result });
-  });
-
-  console.log('Addons initialized:', registry.getAllAddonIds());
+  console.log('[Plugins] Initialized:', registry.getAllAddonIds());
 }
 
 /**
@@ -172,10 +153,15 @@ function startDemucsServer(): void {
   // Check server health after a short delay
   setTimeout(async () => {
     try {
-      const available = await karaokeProcessor.isAvailable();
-      console.log('[Demucs] Server available:', available);
-      // Notify renderer
-      mainWindow?.webContents.send('karaoke-availability-change', { available });
+      const karaokePlugin = pluginLoader?.getPlugin('karaoke');
+      if (karaokePlugin?.instance) {
+        const karaokeInstance = karaokePlugin.instance as any;
+        if (typeof karaokeInstance.isAvailable === 'function') {
+          const available = await karaokeInstance.isAvailable();
+          console.log('[Demucs] Server available:', available);
+          mainWindow?.webContents.send('karaoke-availability-change', { available });
+        }
+      }
     } catch {
       // Server not available yet
     }
@@ -502,11 +488,13 @@ function setupIPCHandlers(): void {
   // Get animated artwork for a track (triggers MP4 conversion)
   ipcMain.handle('get-animated-artwork', async (_event, { album, artist, track }: { album: string; artist: string; track?: string }) => {
     try {
-      if (!appleMusicProvider) {
+      // Get Apple Music provider from plugin loader
+      const appleMusicPlugin = pluginLoader?.getPlugin('applemusic-artwork');
+      if (!appleMusicPlugin?.instance) {
         return null;
       }
 
-      // Check if provider is enabled
+      // Check if provider is enabled in registry
       const provider = registry.get('applemusic-artwork');
       if (!provider) {
         console.log('Apple Music artwork provider is disabled');
@@ -514,7 +502,12 @@ function setupIPCHandlers(): void {
       }
 
       // Get animated artwork and convert to MP4
-      const result = await appleMusicProvider.getAnimatedArtworkAsMP4(
+      const appleMusicInstance = appleMusicPlugin.instance as any;
+      if (typeof appleMusicInstance.getAnimatedArtworkAsMP4 !== 'function') {
+        return null;
+      }
+
+      const result = await appleMusicInstance.getAnimatedArtworkAsMP4(
         { album, artist, track },
         { returnBuffer: false, cleanup: false }
       );
@@ -672,11 +665,28 @@ function setupIPCHandlers(): void {
   // Get lyrics for a track
   ipcMain.handle('get-lyrics', async (_event, { title, artist, album, duration }: { title: string; artist: string; album?: string; duration?: number }) => {
     try {
-      if (!lrclibProvider) {
+      // Get lyrics provider from plugin loader
+      const lrclibPlugin = pluginLoader?.getPlugin('lrclib-lyrics');
+      if (!lrclibPlugin?.instance) {
+        // Try to get any lyrics provider from registry
+        const providers = registry.getLyricsProviders();
+        if (providers.length === 0) {
+          return null;
+        }
+        // Use first available lyrics provider
+        const firstProvider = providers[0];
+        if (!firstProvider) {
+          return null;
+        }
+        return await firstProvider.getLyrics({ title, artist, album, duration });
+      }
+
+      const lrclibInstance = lrclibPlugin.instance as any;
+      if (typeof lrclibInstance.getLyrics !== 'function') {
         return null;
       }
 
-      const lyrics = await lrclibProvider.getLyrics({
+      const lyrics = await lrclibInstance.getLyrics({
         title,
         artist,
         album,
@@ -1758,10 +1768,20 @@ function setupIPCHandlers(): void {
   // Karaoke Handlers
   // =============================================
 
+  // Helper to get karaoke processor from plugin loader
+  const getKaraokeProcessor = (): any | null => {
+    const karaokePlugin = pluginLoader?.getPlugin('karaoke');
+    return karaokePlugin?.instance || null;
+  };
+
   // Check if karaoke is available
   ipcMain.handle('karaoke-is-available', async () => {
     try {
-      const available = await karaokeProcessor.isAvailable();
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.isAvailable !== 'function') {
+        return { available: false };
+      }
+      const available = await processor.isAvailable();
       return { available };
     } catch {
       return { available: false };
@@ -1771,8 +1791,12 @@ function setupIPCHandlers(): void {
   // Process a track for karaoke (get instrumental)
   ipcMain.handle('karaoke-process-track', async (_event, { trackId, audioUrl }: { trackId: string; audioUrl: string }) => {
     try {
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.processTrack !== 'function') {
+        return { success: false, error: 'Karaoke plugin not available' };
+      }
       console.log(`[Karaoke] Processing track: ${trackId}`);
-      const result = await karaokeProcessor.processTrack(trackId, audioUrl);
+      const result = await processor.processTrack(trackId, audioUrl);
       console.log(`[Karaoke] Processing complete for: ${trackId}, cached: ${result.cached}`);
       return { success: true, result };
     } catch (error) {
@@ -1784,7 +1808,11 @@ function setupIPCHandlers(): void {
   // Check if track is cached
   ipcMain.handle('karaoke-has-cached', async (_event, trackId: string) => {
     try {
-      const cached = await karaokeProcessor.hasCached(trackId);
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.hasCached !== 'function') {
+        return { cached: false };
+      }
+      const cached = await processor.hasCached(trackId);
       return { cached };
     } catch {
       return { cached: false };
@@ -1794,7 +1822,11 @@ function setupIPCHandlers(): void {
   // Get cached instrumental
   ipcMain.handle('karaoke-get-cached', async (_event, trackId: string) => {
     try {
-      const result = await karaokeProcessor.getCached(trackId);
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.getCached !== 'function') {
+        return { success: false, error: 'Karaoke plugin not available' };
+      }
+      const result = await processor.getCached(trackId);
       return { success: true, result };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -1804,7 +1836,11 @@ function setupIPCHandlers(): void {
   // Clear cache for a track
   ipcMain.handle('karaoke-clear-cache', async (_event, trackId: string) => {
     try {
-      await karaokeProcessor.clearCache(trackId);
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.clearCache !== 'function') {
+        return { success: false, error: 'Karaoke plugin not available' };
+      }
+      await processor.clearCache(trackId);
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
@@ -1814,7 +1850,11 @@ function setupIPCHandlers(): void {
   // Clear all karaoke cache
   ipcMain.handle('karaoke-clear-all-cache', async () => {
     try {
-      await karaokeProcessor.clearAllCache();
+      const processor = getKaraokeProcessor();
+      if (!processor || typeof processor.clearAllCache !== 'function') {
+        return { success: false, error: 'Karaoke plugin not available' };
+      }
+      await processor.clearAllCache();
       return { success: true };
     } catch (error) {
       return { success: false, error: String(error) };
