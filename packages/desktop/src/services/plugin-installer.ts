@@ -111,8 +111,20 @@ class PluginInstallerService {
 
   /**
    * Install from git repository
+   * Supports subdirectory syntax: https://github.com/user/repo.git#subdirectory/path
    */
   async installFromGit(gitUrl: string, onProgress?: ProgressCallback): Promise<InstallResult> {
+    // Parse subdirectory from URL fragment if present
+    let repoUrl = gitUrl;
+    let subdirectory: string | null = null;
+
+    const hashIndex = gitUrl.indexOf('#');
+    if (hashIndex !== -1) {
+      repoUrl = gitUrl.substring(0, hashIndex);
+      subdirectory = gitUrl.substring(hashIndex + 1);
+      console.log(`[PluginInstaller] Parsed git URL: repo=${repoUrl}, subdir=${subdirectory}`);
+    }
+
     // Ensure temp directory is clean
     if (fs.existsSync(this.tempDir)) {
       await fs.promises.rm(this.tempDir, { recursive: true });
@@ -126,19 +138,54 @@ class PluginInstallerService {
         message: `Cloning repository...`,
       });
 
-      // Clone the repository
-      await this.runCommand('git', ['clone', '--depth', '1', gitUrl, this.tempDir], {
-        onProgress: (output) => {
-          onProgress?.({
-            phase: 'downloading',
-            progress: 30,
-            message: output,
-          });
-        },
-      });
+      // Clone the repository (use sparse checkout for subdirectory if specified)
+      if (subdirectory) {
+        // Use sparse checkout to only get the subdirectory
+        await this.runCommand('git', ['clone', '--depth', '1', '--filter=blob:none', '--sparse', repoUrl, this.tempDir], {
+          onProgress: (output) => {
+            onProgress?.({
+              phase: 'downloading',
+              progress: 20,
+              message: output,
+            });
+          },
+        });
+
+        // Configure sparse checkout for the subdirectory
+        await this.runCommand('git', ['sparse-checkout', 'set', subdirectory], {
+          cwd: this.tempDir,
+          onProgress: (output) => {
+            onProgress?.({
+              phase: 'downloading',
+              progress: 30,
+              message: output,
+            });
+          },
+        });
+      } else {
+        await this.runCommand('git', ['clone', '--depth', '1', repoUrl, this.tempDir], {
+          onProgress: (output) => {
+            onProgress?.({
+              phase: 'downloading',
+              progress: 30,
+              message: output,
+            });
+          },
+        });
+      }
+
+      // Determine the plugin source directory
+      const pluginSourceDir = subdirectory
+        ? path.join(this.tempDir, subdirectory)
+        : this.tempDir;
+
+      // Verify the subdirectory exists
+      if (subdirectory && !fs.existsSync(pluginSourceDir)) {
+        throw new Error(`Subdirectory not found in repository: ${subdirectory}`);
+      }
 
       // Read and validate manifest
-      const manifest = await this.readManifest(this.tempDir);
+      const manifest = await this.readManifest(pluginSourceDir);
       if (!manifest) {
         throw new Error('Invalid plugin: missing or invalid manifest');
       }
@@ -149,9 +196,9 @@ class PluginInstallerService {
         message: 'Installing dependencies...',
       });
 
-      // Install dependencies
+      // Install dependencies in the plugin source directory
       await this.runCommand('npm', ['install', '--production'], {
-        cwd: this.tempDir,
+        cwd: pluginSourceDir,
         onProgress: (output) => {
           onProgress?.({
             phase: 'installing',
@@ -162,7 +209,7 @@ class PluginInstallerService {
       });
 
       // Build if package.json has a build script
-      const pkgJsonPath = path.join(this.tempDir, 'package.json');
+      const pkgJsonPath = path.join(pluginSourceDir, 'package.json');
       if (fs.existsSync(pkgJsonPath)) {
         const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
         if (pkgJson.scripts?.build) {
@@ -173,7 +220,7 @@ class PluginInstallerService {
           });
 
           await this.runCommand('npm', ['run', 'build'], {
-            cwd: this.tempDir,
+            cwd: pluginSourceDir,
             onProgress: (output) => {
               onProgress?.({
                 phase: 'building',
@@ -191,12 +238,20 @@ class PluginInstallerService {
         message: 'Moving to plugins directory...',
       });
 
-      // Move to plugins directory
+      // Move/copy to plugins directory
       const destDir = path.join(this.pluginsDir, manifest.id);
       if (fs.existsSync(destDir)) {
         await fs.promises.rm(destDir, { recursive: true });
       }
-      await fs.promises.rename(this.tempDir, destDir);
+
+      // If using subdirectory, copy instead of rename (since we can't move across mounts)
+      if (subdirectory) {
+        await this.copyDirectory(pluginSourceDir, destDir);
+        // Cleanup temp directory
+        await fs.promises.rm(this.tempDir, { recursive: true }).catch(() => {});
+      } else {
+        await fs.promises.rename(this.tempDir, destDir);
+      }
 
       // Create manifest file for the plugin loader
       const manifestPath = path.join(destDir, 'audiio-plugin.json');
