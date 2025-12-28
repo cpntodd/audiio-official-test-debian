@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import type { UnifiedTrack, StreamInfo } from '@audiio/core';
+import { streamPrefetch } from '../services/stream-prefetch';
 
 type RepeatMode = 'off' | 'all' | 'one';
 
@@ -92,8 +93,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           }, 100);
         }
       } else if (window.api) {
-        // Request stream resolution via IPC (Electron) for remote tracks
-        const streamInfo = await window.api.playTrack(track) as StreamInfo;
+        // Check prefetch cache first for instant playback
+        const cachedStream = streamPrefetch.getCached(track.id);
+        let streamInfo: StreamInfo;
+
+        if (cachedStream && !streamPrefetch.isExpired(track.id)) {
+          // Use cached stream - instant playback!
+          console.log('[PlayerStore] Using prefetched stream for:', track.title);
+          streamInfo = cachedStream;
+        } else {
+          // Request stream resolution via IPC (Electron) for remote tracks
+          streamInfo = await window.api.playTrack(track) as StreamInfo;
+          // Cache for potential replay
+          streamPrefetch.addToCache(track.id, streamInfo);
+        }
+
         const updatedTrack = { ...track, streamInfo };
 
         set({
@@ -113,6 +127,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           setTimeout(() => {
             window.dispatchEvent(new CustomEvent('audiio:check-auto-queue'));
           }, 100);
+        }
+
+        // Prefetch next tracks in queue (non-blocking)
+        const nextTracks = queue.slice(index + 1, index + 4);
+        if (nextTracks.length > 0) {
+          streamPrefetch.prefetch(nextTracks);
         }
       } else {
         // Fallback for development without Electron
@@ -240,6 +260,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setQueue: (tracks, startIndex = 0) => {
     set({ queue: tracks, queueIndex: startIndex });
+
+    // Prefetch upcoming tracks in queue (non-blocking)
+    const upcoming = tracks.slice(startIndex, startIndex + 4);
+    if (upcoming.length > 0) {
+      streamPrefetch.prefetch(upcoming);
+    }
   },
 
   addToQueue: (track) => {

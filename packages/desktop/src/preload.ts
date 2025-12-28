@@ -97,6 +97,10 @@ const api = {
     return ipcRenderer.invoke('get-similar-tracks', { trackId, source });
   },
 
+  prefetchTracks: (tracks: unknown[]) => {
+    return ipcRenderer.invoke('prefetch-tracks', tracks);
+  },
+
   getArtistLatestRelease: (artistId: string, source?: string) => {
     return ipcRenderer.invoke('get-artist-latest-release', { artistId, source });
   },
