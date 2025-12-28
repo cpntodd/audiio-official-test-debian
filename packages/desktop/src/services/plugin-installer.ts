@@ -74,7 +74,8 @@ class PluginInstallerService {
 
     try {
       // Use npm to install the package
-      await this.runCommand('npm', ['install', packageName, '--save-optional'], {
+      // Use --legacy-peer-deps since SDK/core are local workspace packages not on npm
+      await this.runCommand('npm', ['install', packageName, '--save-optional', '--legacy-peer-deps'], {
         cwd: app.getAppPath(),
         onProgress: (output) => {
           onProgress?.({
@@ -197,7 +198,9 @@ class PluginInstallerService {
       });
 
       // Install dependencies in the plugin source directory
-      await this.runCommand('npm', ['install', '--production'], {
+      // Use --legacy-peer-deps to skip peer dependency resolution (SDK/core are provided by the app)
+      // Use --omit=dev to skip dev dependencies
+      await this.runCommand('npm', ['install', '--omit=dev', '--legacy-peer-deps'], {
         cwd: pluginSourceDir,
         onProgress: (output) => {
           onProgress?.({
