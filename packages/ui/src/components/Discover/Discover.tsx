@@ -33,15 +33,14 @@ export const Discover: React.FC = () => {
   const { search } = useSearchStore();
   const { getTopGenres, getTopArtists, userProfile } = useRecommendationStore();
   const { likedTracks, playlists } = useLibraryStore();
-  const { getPlugin } = usePluginStore();
+  const { hasCapability } = usePluginStore();
 
   // Track recently shown sections for variety
   const [recentSections, setRecentSections] = useState<SectionType[]>([]);
   const [selectedSections, setSelectedSections] = useState<SectionConfig[]>([]);
 
-  // Check for lyrics addon
-  const lyricsPlugin = getPlugin('lrclib-lyrics');
-  const hasLyrics = lyricsPlugin?.enabled ?? false;
+  // Check for lyrics capability (any lyrics provider)
+  const hasLyrics = hasCapability('lyrics-provider');
 
   // Create selection context
   const selectionContext = useMemo((): SelectionContext => {

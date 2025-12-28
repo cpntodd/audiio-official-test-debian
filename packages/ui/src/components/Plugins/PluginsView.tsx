@@ -468,9 +468,24 @@ const InstallFromURLModal: React.FC<InstallFromURLModalProps> = ({ isOpen, onClo
 };
 
 export const PluginsView: React.FC = () => {
-  const { plugins, togglePlugin, getOrderedPlugins, pluginOrder, setPluginOrder } = usePluginStore();
+  const { plugins, togglePlugin, getOrderedPlugins, pluginOrder, setPluginOrder, syncFromBackend } = usePluginStore();
   const { openPlugin } = useNavigationStore();
   const { pluginFolder, setPluginFolder } = useSettingsStore();
+
+  // Sync installed plugins from backend on mount and when plugins change
+  useEffect(() => {
+    syncFromBackend();
+
+    // Listen for plugin changes from main process
+    const cleanup = window.api?.repositories?.onPluginsChanged?.(() => {
+      console.log('[PluginsView] Plugins changed, syncing...');
+      syncFromBackend();
+    });
+
+    return () => {
+      cleanup?.();
+    };
+  }, [syncFromBackend]);
 
   // Plugin folder notification
   const [pluginNotification, setPluginNotification] = useState<string | null>(null);

@@ -41,9 +41,8 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
     translationEnabled
   } = useTranslatedLyrics();
 
-  // Check if lyrics plugin is enabled
-  const lyricsPlugin = usePluginStore(state => state.plugins.find(p => p.id === 'lrclib-lyrics'));
-  const isLyricsEnabled = lyricsPlugin?.enabled ?? true;
+  // Check if any lyrics provider is enabled
+  const isLyricsEnabled = usePluginStore(state => state.hasCapability('lyrics-provider'));
 
   // Detect user scrolling and temporarily disable auto-scroll
   const handleScroll = useCallback(() => {

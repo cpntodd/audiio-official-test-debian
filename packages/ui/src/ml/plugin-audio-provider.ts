@@ -61,51 +61,36 @@ export function unregisterPluginAudioProvider(pluginId: string): void {
 }
 
 // ============================================
-// Example: Spotify Metadata Plugin Provider
+// Example: Metadata Provider Implementation
 // ============================================
 
 /**
- * Example provider that could be implemented by a Spotify metadata plugin
- * This shows how a plugin would provide audio features from Spotify's API
+ * Example provider showing how a metadata plugin would provide audio features
+ * NOTE: These are DOCUMENTATION EXAMPLES only - actual provider registration
+ * is done dynamically in usePluginAudioFeatures.ts based on installed plugins
  */
-export const spotifyProviderExample: PluginFeatureProvider = {
-  pluginId: 'spotify-metadata',
-  priority: 100, // High priority - Spotify has good audio features
+export const metadataProviderExample: PluginFeatureProvider = {
+  pluginId: 'example-metadata', // Dynamic: uses actual plugin ID at runtime
+  priority: 100, // High priority for metadata providers
 
-  async getAudioFeatures(trackId: string): Promise<AudioFeatures | null> {
+  async getAudioFeatures(_trackId: string): Promise<AudioFeatures | null> {
     // In real implementation, this would:
-    // 1. Look up track in Spotify via ISRC or search
-    // 2. Call Spotify's audio-features endpoint
+    // 1. Look up track in the metadata service via ISRC or search
+    // 2. Call the service's audio-features endpoint
     // 3. Return normalized features
-
-    // Example structure of what would be returned:
-    // const response = await spotifyApi.getAudioFeatures(spotifyTrackId);
-    // return {
-    //   bpm: response.tempo,
-    //   key: convertKeyToString(response.key),
-    //   mode: response.mode === 1 ? 'major' : 'minor',
-    //   energy: response.energy,
-    //   danceability: response.danceability,
-    //   acousticness: response.acousticness,
-    //   instrumentalness: response.instrumentalness,
-    //   valence: response.valence,
-    //   loudness: response.loudness,
-    //   speechiness: response.speechiness
-    // };
-
     return null; // Plugin not active
   },
 
-  async getSimilarTracks(trackId: string, limit: number): Promise<string[]> {
+  async getSimilarTracks(_trackId: string, _limit: number): Promise<string[]> {
     // In real implementation:
-    // const recs = await spotifyApi.getRecommendations({ seed_tracks: [spotifyTrackId] });
+    // const recs = await api.getRecommendations({ seed_tracks: [trackId] });
     // return recs.tracks.map(t => t.id);
     return [];
   }
 };
 
 // ============================================
-// Example: Local Audio Analysis Plugin Provider
+// Example: Local Audio Analysis Provider
 // ============================================
 
 /**
@@ -113,52 +98,44 @@ export const spotifyProviderExample: PluginFeatureProvider = {
  * Uses libraries like Essentia.js or Meyda for browser-based analysis
  */
 export const localAnalysisProviderExample: PluginFeatureProvider = {
-  pluginId: 'local-audio-analysis',
+  pluginId: 'example-local-analysis', // Dynamic at runtime
   priority: 50, // Medium priority
 
-  async getAudioFeatures(trackId: string): Promise<AudioFeatures | null> {
+  async getAudioFeatures(_trackId: string): Promise<AudioFeatures | null> {
     // In real implementation, this would:
     // 1. Get audio buffer from the player or file
     // 2. Run Essentia.js or Meyda analysis
     // 3. Extract tempo, spectral features, etc.
-
-    // Example with Essentia.js:
-    // const essentia = await createEssentiaWasm();
-    // const audioData = await getAudioBuffer(trackId);
-    // const bpm = essentia.PercivalBpmEstimator(audioData);
-    // const key = essentia.KeyExtractor(audioData);
-    // const energy = essentia.Energy(audioData);
-
     return null; // Plugin not active
   }
 };
 
 // ============================================
-// Example: Last.fm Plugin Provider
+// Example: Scrobbler Provider Implementation
 // ============================================
 
 /**
- * Example provider using Last.fm for similarity data
+ * Example provider using a scrobbler service for similarity data
  */
-export const lastfmProviderExample: PluginFeatureProvider = {
-  pluginId: 'lastfm-scrobbler',
+export const scrobblerProviderExample: PluginFeatureProvider = {
+  pluginId: 'example-scrobbler', // Dynamic at runtime
   priority: 75,
 
-  async getAudioFeatures(trackId: string): Promise<AudioFeatures | null> {
-    // Last.fm doesn't provide audio features
+  async getAudioFeatures(_trackId: string): Promise<AudioFeatures | null> {
+    // Scrobblers typically don't provide audio features
     return null;
   },
 
-  async getSimilarTracks(trackId: string, limit: number): Promise<string[]> {
+  async getSimilarTracks(_trackId: string, _limit: number): Promise<string[]> {
     // In real implementation:
-    // const similar = await lastfmApi.track.getSimilar(artist, track);
+    // const similar = await api.track.getSimilar(artist, track);
     // return similar.map(t => t.mbid || `${t.artist}-${t.name}`);
     return [];
   },
 
-  async getArtistSimilarity(artistId1: string, artistId2: string): Promise<number> {
+  async getArtistSimilarity(_artistId1: string, _artistId2: string): Promise<number> {
     // In real implementation:
-    // const similar = await lastfmApi.artist.getSimilar(artist1);
+    // const similar = await api.artist.getSimilar(artist1);
     // const match = similar.find(a => a.name === artist2);
     // return match ? match.match : 0;
     return 0;

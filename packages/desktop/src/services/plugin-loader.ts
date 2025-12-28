@@ -5,8 +5,33 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { app } from 'electron';
+import Module from 'module';
 import type { AddonRegistry, BaseAddon, AddonRole } from '@audiio/core';
+
+// Hook into Node's module resolution to provide @audiio/sdk and @audiio/core to plugins
+const originalResolveFilename = (Module as any)._resolveFilename;
+(Module as any)._resolveFilename = function(request: string, parent: any, isMain: boolean, options: any) {
+  // Redirect @audiio/sdk and @audiio/core to the app's bundled versions
+  if (request === '@audiio/sdk' || request === '@audiio/core') {
+    // Find the package in the app's node_modules or workspace packages
+    const possiblePaths = [
+      path.join(process.cwd(), 'node_modules', request),
+      path.join(process.cwd(), 'packages', request.replace('@audiio/', '')),
+      path.join(__dirname, '..', '..', '..', '..', 'node_modules', request),
+      path.join(__dirname, '..', '..', '..', '..', 'packages', request.replace('@audiio/', '')),
+    ];
+
+    for (const pkgPath of possiblePaths) {
+      if (fs.existsSync(pkgPath)) {
+        return originalResolveFilename.call(this, pkgPath, parent, isMain, options);
+      }
+    }
+  }
+
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
 
 export interface PluginManifest {
   id: string;
@@ -206,7 +231,14 @@ export class PluginLoader {
         const pluginDir = path.dirname(manifestPath);
         const entryPath = path.join(pluginDir, manifest.main);
 
-        const module = await this.dynamicImport(entryPath);
+        // Use require for CommonJS plugins to ensure module resolution hooks work
+        // Clear cache first to allow reloading
+        try {
+          delete require.cache[require.resolve(entryPath)];
+        } catch {
+          // Module not in cache yet, that's fine
+        }
+        const module = require(entryPath);
         const localModuleKeys = Object.keys(module);
         const localFirstKey = localModuleKeys[0];
         const ProviderClass = module.default || (localFirstKey ? module[localFirstKey] : undefined);
@@ -397,9 +429,15 @@ export class PluginLoader {
    * Dynamic import helper that works in both ESM and CJS contexts
    */
   private async dynamicImport(specifier: string): Promise<any> {
+    // Convert absolute paths to file:// URLs for ESM loader on Windows
+    let importSpecifier = specifier;
+    if (path.isAbsolute(specifier)) {
+      importSpecifier = pathToFileURL(specifier).href;
+    }
+
     // Use Function constructor to prevent bundlers from transforming the import
     const dynamicImportFn = new Function('specifier', 'return import(specifier)');
-    return dynamicImportFn(specifier);
+    return dynamicImportFn(importSpecifier);
   }
 
   /**

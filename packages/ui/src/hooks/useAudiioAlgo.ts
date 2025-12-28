@@ -1,8 +1,8 @@
 /**
- * useAudiioAlgo - Hook for integrating with the Audiio Algorithm plugin
+ * useAlgorithm - Hook for integrating with any audio-processor plugin
  *
  * Provides easy access to ML-powered features like scoring, recommendations,
- * similarity search, and training status.
+ * similarity search, and training status. Works with any installed algorithm plugin.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -95,15 +95,17 @@ const defaultState: AlgoState = {
 };
 
 /**
- * Hook for accessing Audiio Algorithm functionality
+ * Hook for accessing algorithm functionality from any audio-processor plugin
  */
-export function useAudiioAlgo(): UseAudiioAlgoReturn {
-  const { getPlugin, updatePluginSetting, getPluginSettings } = usePluginStore();
+export function useAlgorithm(): UseAudiioAlgoReturn {
+  const { getPluginsByRole, updatePluginSetting, hasCapability } = usePluginStore();
 
   const [state, setState] = useState<AlgoState>(defaultState);
 
-  // Get plugin state
-  const plugin = useMemo(() => getPlugin('audiio-algo'), [getPlugin]);
+  // Get first available audio-processor plugin (algorithm)
+  const algorithmPlugins = useMemo(() => getPluginsByRole('audio-processor'), [getPluginsByRole]);
+  const plugin = algorithmPlugins[0];
+  const pluginId = plugin?.id;
   const isEnabled = plugin?.enabled ?? false;
 
   // Initialize state from plugin
@@ -120,7 +122,7 @@ export function useAudiioAlgo(): UseAudiioAlgoReturn {
   // Check if algorithm is available via IPC
   useEffect(() => {
     const checkInitialization = async () => {
-      if (!isEnabled) {
+      if (!isEnabled || !pluginId) {
         setState((prev) => ({ ...prev, isInitialized: false }));
         return;
       }
@@ -128,7 +130,7 @@ export function useAudiioAlgo(): UseAudiioAlgoReturn {
       try {
         // Check if the algorithm addon is loaded in main process
         if (window.api?.isAddonLoaded) {
-          const loaded = await window.api.isAddonLoaded('audiio-algo');
+          const loaded = await window.api.isAddonLoaded(pluginId);
           setState((prev) => ({
             ...prev,
             isInitialized: loaded,
@@ -146,7 +148,7 @@ export function useAudiioAlgo(): UseAudiioAlgoReturn {
     };
 
     checkInitialization();
-  }, [isEnabled]);
+  }, [isEnabled, pluginId]);
 
   // Score a single track
   const scoreTrack = useCallback(
@@ -289,13 +291,15 @@ export function useAudiioAlgo(): UseAudiioAlgoReturn {
   // Update setting
   const updateSetting = useCallback(
     (key: string, value: boolean | string | number): void => {
-      updatePluginSetting('audiio-algo', key, value);
-      setState((prev) => ({
-        ...prev,
-        settings: { ...prev.settings, [key]: value },
-      }));
+      if (pluginId) {
+        updatePluginSetting(pluginId, key, value);
+        setState((prev) => ({
+          ...prev,
+          settings: { ...prev.settings, [key]: value },
+        }));
+      }
     },
-    [updatePluginSetting]
+    [updatePluginSetting, pluginId]
   );
 
   return {
@@ -313,3 +317,6 @@ export function useAudiioAlgo(): UseAudiioAlgoReturn {
 
 // Re-export types
 export type { UseAudiioAlgoReturn as AudiioAlgoHook };
+
+// Backward-compatible alias
+export const useAudiioAlgo = useAlgorithm;

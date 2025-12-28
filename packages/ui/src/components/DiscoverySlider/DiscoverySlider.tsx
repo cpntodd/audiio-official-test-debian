@@ -50,8 +50,13 @@ export const DiscoverySlider: React.FC<DiscoverySliderProps> = ({
   showLabels = true,
   className = '',
 }) => {
-  const { getPluginSettings, updatePluginSetting } = usePluginStore();
-  const settings = getPluginSettings('audiio-algo');
+  const { getPluginSettings, updatePluginSetting, getPluginsByRole } = usePluginStore();
+
+  // Get first audio-processor plugin (the algorithm plugin)
+  const algorithmPlugins = getPluginsByRole('audio-processor');
+  const algorithmPlugin = algorithmPlugins[0];
+  const algorithmPluginId = algorithmPlugin?.id;
+  const settings = algorithmPluginId ? getPluginSettings(algorithmPluginId) : undefined;
 
   // Get current level from settings
   const currentLevel = (settings?.explorationLevel as string) || 'balanced';
@@ -73,8 +78,10 @@ export const DiscoverySlider: React.FC<DiscoverySliderProps> = ({
   const handleChangeComplete = useCallback(() => {
     setIsDragging(false);
     const level = getLevelFromValue(sliderValue);
-    updatePluginSetting('audiio-algo', 'explorationLevel', level.value);
-  }, [sliderValue, updatePluginSetting]);
+    if (algorithmPluginId) {
+      updatePluginSetting(algorithmPluginId, 'explorationLevel', level.value);
+    }
+  }, [sliderValue, updatePluginSetting, algorithmPluginId]);
 
   const currentLevelInfo = getLevelFromValue(sliderValue);
 
@@ -145,16 +152,23 @@ export const DiscoverySlider: React.FC<DiscoverySliderProps> = ({
  * Mini version for Discover page header
  */
 export const DiscoverySliderMini: React.FC<{ className?: string }> = ({ className = '' }) => {
-  const { getPluginSettings, updatePluginSetting } = usePluginStore();
-  const settings = getPluginSettings('audiio-algo');
+  const { getPluginSettings, updatePluginSetting, getPluginsByRole } = usePluginStore();
+
+  // Get first audio-processor plugin (the algorithm plugin)
+  const algorithmPlugins = getPluginsByRole('audio-processor');
+  const algorithmPlugin = algorithmPlugins[0];
+  const algorithmPluginId = algorithmPlugin?.id;
+  const settings = algorithmPluginId ? getPluginSettings(algorithmPluginId) : undefined;
   const currentLevel = (settings?.explorationLevel as string) || 'balanced';
 
   const handleCycle = useCallback(() => {
     const nextLevel =
       currentLevel === 'low' ? 'balanced' :
       currentLevel === 'balanced' ? 'high' : 'low';
-    updatePluginSetting('audiio-algo', 'explorationLevel', nextLevel);
-  }, [currentLevel, updatePluginSetting]);
+    if (algorithmPluginId) {
+      updatePluginSetting(algorithmPluginId, 'explorationLevel', nextLevel);
+    }
+  }, [currentLevel, updatePluginSetting, algorithmPluginId]);
 
   const icons = {
     low: '🏠',

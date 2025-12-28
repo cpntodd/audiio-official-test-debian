@@ -5,6 +5,9 @@
  * - Registers audio feature providers when plugins are enabled
  * - Unregisters providers when plugins are disabled
  * - Caches audio features for better performance
+ *
+ * Uses capability-based detection - any plugin that provides audio features
+ * will be automatically registered.
  */
 
 import { useEffect, useRef } from 'react';
@@ -21,9 +24,10 @@ import type { AudioFeatures } from '../ml/advanced-scoring';
 const audioFeaturesCache = new Map<string, AudioFeatures>();
 
 /**
- * Plugin IDs that support audio features
+ * Plugin roles that can provide audio features
+ * Metadata providers and scrobblers can provide features
  */
-const AUDIO_FEATURE_PLUGINS = ['spotify-metadata', 'local-audio-analysis'];
+const AUDIO_FEATURE_ROLES = ['metadata-provider', 'scrobbler'] as const;
 
 /**
  * Whether local audio analysis provider is registered
@@ -31,11 +35,11 @@ const AUDIO_FEATURE_PLUGINS = ['spotify-metadata', 'local-audio-analysis'];
 let localAnalysisRegistered = false;
 
 /**
- * Create a Spotify audio feature provider
- * Connects to the main process API for Spotify data
+ * Create a metadata provider for audio features
+ * Connects to the main process API for audio data from any metadata provider
  */
-function createSpotifyProvider() {
-  return createPluginFeatureProvider('spotify-metadata', 100, {
+function createMetadataFeatureProvider(pluginId: string, priority: number = 100) {
+  return createPluginFeatureProvider(pluginId, priority, {
     async getAudioFeatures(trackId: string): Promise<AudioFeatures | null> {
       // Check cache first
       const cached = audioFeaturesCache.get(trackId);
@@ -49,7 +53,7 @@ function createSpotifyProvider() {
           const features = await window.api.getAudioFeatures(trackId);
           if (features) {
             const normalized: AudioFeatures = {
-              bpm: features.tempo,
+              bpm: features.tempo || features.bpm,
               energy: features.energy,
               danceability: features.danceability,
               acousticness: features.acousticness,
@@ -57,8 +61,8 @@ function createSpotifyProvider() {
               valence: features.valence,
               loudness: features.loudness,
               speechiness: features.speechiness,
-              key: keyNumberToString(features.key, features.mode),
-              mode: features.mode === 1 ? 'major' : 'minor'
+              key: features.key ? (typeof features.key === 'number' ? keyNumberToString(features.key, features.mode) : features.key) : undefined,
+              mode: typeof features.mode === 'number' ? (features.mode === 1 ? 'major' : 'minor') : features.mode
             };
 
             // Cache the result
@@ -67,7 +71,7 @@ function createSpotifyProvider() {
           }
         }
       } catch (error) {
-        console.warn('[SpotifyProvider] Failed to get audio features:', error);
+        console.warn(`[${pluginId}] Failed to get audio features:`, error);
       }
 
       return null;
@@ -82,7 +86,7 @@ function createSpotifyProvider() {
           }
         }
       } catch (error) {
-        console.warn('[SpotifyProvider] Failed to get similar tracks:', error);
+        console.warn(`[${pluginId}] Failed to get similar tracks:`, error);
       }
       return [];
     }
@@ -90,24 +94,25 @@ function createSpotifyProvider() {
 }
 
 /**
- * Create a Last.fm similarity provider
- * Uses Last.fm for artist/track similarity data
+ * Create a scrobbler-based similarity provider
+ * Uses scrobbler services for artist/track similarity data
  */
-function createLastfmProvider() {
-  return createPluginFeatureProvider('lastfm-scrobbler', 75, {
+function createScrobblerFeatureProvider(pluginId: string, priority: number = 75) {
+  return createPluginFeatureProvider(pluginId, priority, {
     async getAudioFeatures(_trackId: string): Promise<AudioFeatures | null> {
-      // Last.fm doesn't provide audio features
+      // Scrobblers typically don't provide audio features
       return null;
     },
 
     async getSimilarTracks(trackId: string, limit: number): Promise<string[]> {
       try {
-        if (window.api?.getLastfmSimilar) {
-          const similar = await window.api.getLastfmSimilar(trackId, limit);
+        // Use the generic similar tracks API
+        if (window.api?.getSimilarTracks) {
+          const similar = await window.api.getSimilarTracks(trackId, limit);
           return similar || [];
         }
       } catch (error) {
-        console.warn('[LastfmProvider] Failed to get similar tracks:', error);
+        console.warn(`[${pluginId}] Failed to get similar tracks:`, error);
       }
       return [];
     },
@@ -118,7 +123,7 @@ function createLastfmProvider() {
           return await window.api.getArtistSimilarity(artistId1, artistId2);
         }
       } catch (error) {
-        console.warn('[LastfmProvider] Failed to get artist similarity:', error);
+        console.warn(`[${pluginId}] Failed to get artist similarity:`, error);
       }
       return 0;
     }
@@ -217,32 +222,27 @@ export function usePluginAudioFeatures(): void {
   useEffect(() => {
     const currentlyRegistered = registeredRef.current;
 
-    // Check each audio-feature capable plugin
+    // Check each plugin for audio feature capability based on roles
     for (const plugin of plugins) {
-      const isAudioPlugin = AUDIO_FEATURE_PLUGINS.includes(plugin.id) ||
-                           plugin.id === 'lastfm-scrobbler';
+      // Check if plugin has a role that can provide audio features
+      const isMetadataProvider = plugin.roles?.includes('metadata-provider');
+      const isScrobbler = plugin.roles?.includes('scrobbler');
+      const canProvideFeatures = isMetadataProvider || isScrobbler;
 
-      if (!isAudioPlugin) continue;
+      if (!canProvideFeatures) continue;
 
       const shouldBeRegistered = plugin.enabled && plugin.installed;
       const isCurrentlyRegistered = currentlyRegistered.has(plugin.id);
 
       if (shouldBeRegistered && !isCurrentlyRegistered) {
-        // Register the provider
+        // Register the provider based on role
         let provider;
-        switch (plugin.id) {
-          case 'spotify-metadata':
-            provider = createSpotifyProvider();
-            break;
-          case 'lastfm-scrobbler':
-            provider = createLastfmProvider();
-            break;
-          case 'local-audio-analysis':
-            // Local analysis is handled separately via initializeLocalAnalysis
-            // Skip here to avoid duplicate registration
-            continue;
-          default:
-            continue;
+        if (isMetadataProvider) {
+          // Metadata providers get higher priority
+          provider = createMetadataFeatureProvider(plugin.id, 100);
+        } else if (isScrobbler) {
+          // Scrobblers get lower priority (mainly for similarity)
+          provider = createScrobblerFeatureProvider(plugin.id, 75);
         }
 
         if (provider) {
