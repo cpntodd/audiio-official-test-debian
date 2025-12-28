@@ -42,11 +42,10 @@ export const LyricsHighlightSection: React.FC<LyricsHighlightSectionProps> = ({
   onSeeAll,
 }) => {
   const { play, setQueue, currentTrack, isPlaying } = usePlayerStore();
-  const { getPlugin } = usePluginStore();
+  const { hasCapability } = usePluginStore();
 
-  // Check if lyrics addon is enabled
-  const lyricsPlugin = getPlugin('lrclib-lyrics');
-  const hasLyrics = lyricsPlugin?.enabled ?? false;
+  // Check if any lyrics provider is enabled
+  const hasLyrics = hasCapability('lyrics-provider');
 
   // Fetch tracks if no quotes provided
   const { tracks, isLoading, error } = useSectionTracks(
@@ -60,7 +59,7 @@ export const LyricsHighlightSection: React.FC<LyricsHighlightSectionProps> = ({
   useEffect(() => {
     if (propQuotes || tracks.length === 0) return;
 
-    // In a real implementation, this would fetch lyrics from the lrclib addon
+    // In a real implementation, this would fetch lyrics from the lyrics provider
     // For now, use sample quotes with track data
     const generatedQuotes: LyricsQuote[] = tracks.slice(0, 4).map((track, i) => ({
       trackId: track.id,

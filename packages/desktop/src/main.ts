@@ -519,26 +519,29 @@ function setupIPCHandlers(): void {
   // Get animated artwork for a track (triggers MP4 conversion)
   ipcMain.handle('get-animated-artwork', async (_event, { album, artist, track }: { album: string; artist: string; track?: string }) => {
     try {
-      // Get Apple Music provider from plugin loader
-      const appleMusicPlugin = pluginLoader?.getPlugin('applemusic-artwork');
-      if (!appleMusicPlugin?.instance) {
-        return null;
+      // Find any plugin that can provide animated artwork
+      // Look for plugins that have getAnimatedArtworkAsMP4 method
+      const loadedPlugins = pluginLoader?.getLoadedPlugins() || [];
+      let artworkPlugin = null;
+
+      for (const plugin of loadedPlugins) {
+        if (plugin.instance && typeof (plugin.instance as any).getAnimatedArtworkAsMP4 === 'function') {
+          // Check if plugin is enabled in registry
+          const provider = registry.get(plugin.manifest.id);
+          if (provider) {
+            artworkPlugin = plugin;
+            break;
+          }
+        }
       }
 
-      // Check if provider is enabled in registry
-      const provider = registry.get('applemusic-artwork');
-      if (!provider) {
-        console.log('Apple Music artwork provider is disabled');
+      if (!artworkPlugin?.instance) {
         return null;
       }
 
       // Get animated artwork and convert to MP4
-      const appleMusicInstance = appleMusicPlugin.instance as any;
-      if (typeof appleMusicInstance.getAnimatedArtworkAsMP4 !== 'function') {
-        return null;
-      }
-
-      const result = await appleMusicInstance.getAnimatedArtworkAsMP4(
+      const artworkInstance = artworkPlugin.instance as any;
+      const result = await artworkInstance.getAnimatedArtworkAsMP4(
         { album, artist, track },
         { returnBuffer: false, cleanup: false }
       );
@@ -696,35 +699,19 @@ function setupIPCHandlers(): void {
   // Get lyrics for a track
   ipcMain.handle('get-lyrics', async (_event, { title, artist, album, duration }: { title: string; artist: string; album?: string; duration?: number }) => {
     try {
-      // Get lyrics provider from plugin loader
-      const lrclibPlugin = pluginLoader?.getPlugin('lrclib-lyrics');
-      if (!lrclibPlugin?.instance) {
-        // Try to get any lyrics provider from registry
-        const providers = registry.getLyricsProviders();
-        if (providers.length === 0) {
-          return null;
-        }
-        // Use first available lyrics provider
-        const firstProvider = providers[0];
-        if (!firstProvider) {
-          return null;
-        }
-        return await firstProvider.getLyrics({ title, artist, album, duration });
-      }
-
-      const lrclibInstance = lrclibPlugin.instance as any;
-      if (typeof lrclibInstance.getLyrics !== 'function') {
+      // Get any lyrics provider from registry (capability-based)
+      const providers = registry.getLyricsProviders();
+      if (providers.length === 0) {
         return null;
       }
 
-      const lyrics = await lrclibInstance.getLyrics({
-        title,
-        artist,
-        album,
-        duration
-      });
+      // Use first available lyrics provider
+      const firstProvider = providers[0];
+      if (!firstProvider) {
+        return null;
+      }
 
-      return lyrics;
+      return await firstProvider.getLyrics({ title, artist, album, duration });
     } catch (error) {
       console.error('Get lyrics error:', error);
       return null;
@@ -1931,10 +1918,17 @@ function setupIPCHandlers(): void {
 
   // Install a plugin from any source (npm, git, local)
   ipcMain.handle('install-plugin-from-source', async (_event, source: string) => {
-    return await pluginInstaller.install(source, (progress) => {
+    const result = await pluginInstaller.install(source, (progress) => {
       // Forward progress to renderer
       mainWindow?.webContents.send('plugin-install-progress', progress);
     });
+    if (result.success) {
+      // Reload plugins after install
+      await pluginLoader?.reloadPlugins();
+      // Notify renderer that plugins changed
+      mainWindow?.webContents.send('plugins-changed');
+    }
+    return result;
   });
 
   // Uninstall a plugin
@@ -1943,6 +1937,8 @@ function setupIPCHandlers(): void {
     if (result.success) {
       // Reload plugins after uninstall
       await pluginLoader?.reloadPlugins();
+      // Notify renderer that plugins changed
+      mainWindow?.webContents.send('plugins-changed');
     }
     return result;
   });
@@ -1955,6 +1951,8 @@ function setupIPCHandlers(): void {
     if (result.success) {
       // Reload plugins after update
       await pluginLoader?.reloadPlugins();
+      // Notify renderer that plugins changed
+      mainWindow?.webContents.send('plugins-changed');
     }
     return result;
   });

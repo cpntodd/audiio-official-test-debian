@@ -220,7 +220,7 @@ export const ArtistDetailView: React.FC = () => {
       id: similarArtist.id,
       name: similarArtist.name,
       image: similarArtist.image,
-      source: artistDetail?.source || 'deezer'
+      source: artistDetail?.source
     });
   };
 

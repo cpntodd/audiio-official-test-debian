@@ -176,15 +176,16 @@ export function useRecommendationExplanation() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { getPlugin } = usePluginStore();
+  const { getPluginsByRole } = usePluginStore();
 
   const fetchExplanation = useCallback(async (track: UnifiedTrack): Promise<TrackExplanation | null> => {
     setIsLoading(true);
     setError(null);
 
     try {
-      // Try to get explanation from audiio-algo plugin
-      const algoPlugin = getPlugin('audiio-algo');
+      // Try to get explanation from any audio-processor plugin (algorithm)
+      const algorithmPlugins = getPluginsByRole('audio-processor');
+      const algoPlugin = algorithmPlugins[0];
 
       let scoreComponents: Record<string, number> = {};
       let finalScore = 75; // Default score
@@ -271,7 +272,7 @@ export function useRecommendationExplanation() {
     } finally {
       setIsLoading(false);
     }
-  }, [getPlugin]);
+  }, [getPluginsByRole]);
 
   const clearExplanation = useCallback(() => {
     setExplanation(null);

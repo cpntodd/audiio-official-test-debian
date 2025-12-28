@@ -23,11 +23,10 @@ export const TranslationToggle: React.FC<TranslationToggleProps> = ({ compact = 
     toggleTranslation
   } = useTranslatedLyrics();
 
-  // Check if translation plugin is enabled - use specific selector for enabled state
-  const isPluginEnabled = usePluginStore(state => {
-    const plugin = state.plugins.find(p => p.id === 'libretranslate');
-    return plugin?.enabled ?? true;
-  });
+  // Translation is available if lyrics provider exists (translation uses external APIs)
+  // TODO: Add 'translation-provider' role when translation plugins are implemented
+  const hasLyricsProvider = usePluginStore(state => state.hasCapability('lyrics-provider'));
+  const isPluginEnabled = hasLyricsProvider; // Translation works when lyrics are available
 
   // Get raw lyrics to detect language directly
   const rawLyrics = useLyricsStore(state => state.lyrics);

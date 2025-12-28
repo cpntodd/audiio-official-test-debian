@@ -701,6 +701,15 @@ const api = {
         ipcRenderer.removeListener('plugin-install-progress', listener);
       };
     },
+
+    // Listen for plugin changes (install/uninstall/update)
+    onPluginsChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('plugins-changed', listener);
+      return () => {
+        ipcRenderer.removeListener('plugins-changed', listener);
+      };
+    },
   },
 };
 

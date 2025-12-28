@@ -178,35 +178,34 @@ class PluginInstallerService {
         throw new Error('Invalid plugin: missing or invalid manifest');
       }
 
-      onProgress?.({
-        phase: 'installing',
-        progress: 50,
-        message: 'Installing dependencies...',
-      });
-
-      // Install dependencies in the plugin source directory
-      // Use --legacy-peer-deps to skip peer dependency resolution (SDK/core are provided by the app)
-      // Use --omit=dev to skip dev dependencies
-      await this.runCommand('npm', ['install', '--omit=dev', '--legacy-peer-deps'], {
-        cwd: pluginSourceDir,
-        onProgress: (output) => {
-          onProgress?.({
-            phase: 'installing',
-            progress: 60,
-            message: output,
-          });
-        },
-      });
-
       // Check if plugin is already built (dist/ exists with index.js)
       const distDir = path.join(pluginSourceDir, 'dist');
       const distIndexPath = path.join(distDir, 'index.js');
       const isPrebuilt = fs.existsSync(distIndexPath);
 
-      // Only build if not pre-built and has a build script
+      // Only install deps and build if not pre-built
       const pkgJsonPath = path.join(pluginSourceDir, 'package.json');
       if (!isPrebuilt && fs.existsSync(pkgJsonPath)) {
         const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+
+        // Install dependencies for building
+        onProgress?.({
+          phase: 'installing',
+          progress: 50,
+          message: 'Installing dependencies...',
+        });
+        await this.runCommand('npm', ['install', '--legacy-peer-deps'], {
+          cwd: pluginSourceDir,
+          onProgress: (output) => {
+            onProgress?.({
+              phase: 'installing',
+              progress: 60,
+              message: output,
+            });
+          },
+        });
+
+        // Build if has build script
         if (pkgJson.scripts?.build) {
           onProgress?.({
             phase: 'building',
@@ -249,6 +248,30 @@ class PluginInstallerService {
         await fs.promises.rm(pluginSourceDir, { recursive: true }).catch(() => {});
       } else {
         await fs.promises.rename(this.tempDir, destDir);
+      }
+
+      // Install dependencies in final location (copyDirectory skips node_modules)
+      // Only if package.json has dependencies
+      const finalPkgJsonPath = path.join(destDir, 'package.json');
+      if (fs.existsSync(finalPkgJsonPath)) {
+        const finalPkgJson = JSON.parse(fs.readFileSync(finalPkgJsonPath, 'utf-8'));
+        if (finalPkgJson.dependencies && Object.keys(finalPkgJson.dependencies).length > 0) {
+          onProgress?.({
+            phase: 'installing',
+            progress: 95,
+            message: 'Installing plugin dependencies...',
+          });
+          await this.runCommand('npm', ['install', '--omit=dev', '--legacy-peer-deps'], {
+            cwd: destDir,
+            onProgress: (output) => {
+              onProgress?.({
+                phase: 'installing',
+                progress: 95,
+                message: output,
+              });
+            },
+          });
+        }
       }
 
       // Create manifest file for the plugin loader
@@ -411,6 +434,7 @@ class PluginInstallerService {
     id: string;
     name: string;
     version: string;
+    main?: string;
     description?: string;
     roles?: string[];
   } | null> {
@@ -440,6 +464,7 @@ class PluginInstallerService {
             id: pkgJson.audiio.id || pkgJson.name,
             name: pkgJson.audiio.name || pkgJson.name,
             version: pkgJson.version,
+            main: pkgJson.main || './dist/index.js',
             description: pkgJson.description,
             roles: pkgJson.audiio.roles,
           };
