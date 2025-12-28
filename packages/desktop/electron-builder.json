@@ -25,13 +25,14 @@
   "win": {
     "target": [
       {
-        "target": "dir",
+        "target": "nsis",
         "arch": ["x64"]
       }
     ],
+    "icon": "build/icon.png",
     "sign": false,
     "signAndEditExecutable": false,
-    "artifactName": "Audiio-${version}-alpha"
+    "artifactName": "Audiio-${version}-win-x64.${ext}"
   },
   "nsis": {
     "oneClick": false,
