@@ -87,6 +87,9 @@ interface PluginState {
   updatePluginSetting: (pluginId: string, key: string, value: boolean | string | number) => void;
   getPluginSettings: (pluginId: string) => Record<string, boolean | string | number> | undefined;
 
+  // Uninstall
+  removePlugin: (pluginId: string) => Promise<void>;
+
   // Ordering
   reorderPlugins: (fromIndex: number, toIndex: number) => void;
   getOrderedPlugins: () => Plugin[];
@@ -281,6 +284,27 @@ export const usePluginStore = create<PluginState>()(
 
       getPluginSettings: (pluginId) => {
         return get().pluginSettings[pluginId] || get().plugins.find(p => p.id === pluginId)?.settings;
+      },
+
+      removePlugin: async (pluginId) => {
+        try {
+          // Call backend to uninstall the plugin
+          if (window.api?.uninstallAddon) {
+            await window.api.uninstallAddon(pluginId);
+            console.log(`[PluginStore] Plugin ${pluginId} uninstalled`);
+          } else {
+            console.warn('[PluginStore] uninstallAddon API not available');
+          }
+
+          // Remove from local state
+          set((state) => ({
+            plugins: state.plugins.filter((p) => p.id !== pluginId),
+            pluginOrder: state.pluginOrder.filter((id) => id !== pluginId),
+          }));
+        } catch (error) {
+          console.error(`[PluginStore] Failed to uninstall plugin ${pluginId}:`, error);
+          throw error;
+        }
       },
 
       reorderPlugins: (fromIndex, toIndex) => {
