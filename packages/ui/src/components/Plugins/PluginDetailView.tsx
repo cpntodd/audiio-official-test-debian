@@ -22,6 +22,8 @@ const categoryLabels: Record<PluginCategory, string> = {
   translation: 'Translation Service',
   scrobbling: 'Scrobbling Service',
   analysis: 'Audio Analysis',
+  audio: 'Audio Processor',
+  tool: 'Tool',
   other: 'Other',
 };
 
@@ -32,6 +34,8 @@ const categoryColors: Record<PluginCategory, string> = {
   translation: 'var(--color-access-translation, var(--color-access-lyrics))',
   scrobbling: 'var(--color-access-scrobbling)',
   analysis: 'var(--color-access-analysis, var(--color-access-metadata))',
+  audio: 'var(--color-access-audio, var(--color-access-playback))',
+  tool: 'var(--color-access-tool, var(--color-access-system))',
   other: 'var(--color-access-other)',
 };
 
@@ -210,10 +214,14 @@ export const PluginDetailView: React.FC = () => {
     togglePlugin(plugin.id);
   };
 
-  const handleUninstall = () => {
+  const handleUninstall = async () => {
     if (confirm(`Are you sure you want to uninstall "${plugin.name}"?`)) {
-      removePlugin(plugin.id);
-      goBack();
+      try {
+        await removePlugin(plugin.id);
+        goBack();
+      } catch (error) {
+        console.error('Failed to uninstall plugin:', error);
+      }
     }
   };
 
