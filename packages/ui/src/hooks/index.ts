@@ -71,3 +71,9 @@ export {
   type ArtistEnrichmentState,
   type UseArtistEnrichmentOptions,
 } from './useArtistEnrichment';
+
+export {
+  useArtwork,
+  batchResolveArtwork,
+  clearArtworkCache,
+} from './useArtwork';

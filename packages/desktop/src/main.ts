@@ -26,11 +26,11 @@ import { karaokeService } from './services/karaoke-service';
 import { componentService } from './services/component-service';
 import {
   createTrackFromFile,
-  readFileMetadata,
+  readFileMetadata as _readFileMetadata,
   writeFileMetadata,
   enrichTracks,
   getEmbeddedArtwork,
-  type EnrichmentResult
+  type EnrichmentResult as _EnrichmentResult
 } from './local-metadata-service';
 
 // Tools with registered handlers (for cleanup on quit)
@@ -1729,13 +1729,14 @@ function setupIPCHandlers(): void {
     for (let i = 0; i < filePaths.length; i++) {
       const filePath = filePaths[i];
       try {
-        const track = await createTrackFromFile(filePath);
+        const track = await createTrackFromFile(filePath!);
         tracks.push(track);
       } catch (error) {
         console.error(`[LocalMusic] Error reading metadata from ${filePath}:`, error);
         // Create basic track from filename on error
-        const ext = path.extname(filePath);
-        const baseName = path.basename(filePath, ext);
+        const fp = filePath || '';
+        const ext = path.extname(fp);
+        const baseName = path.basename(fp, ext);
         let title = baseName;
         let artist = 'Unknown Artist';
 
@@ -1745,26 +1746,26 @@ function setupIPCHandlers(): void {
           title = baseName.substring(dashIndex + 3).trim();
         }
 
-        const trackId = `local:${Buffer.from(filePath).toString('base64')}`;
+        const trackId = `local:${Buffer.from(fp).toString('base64')}`;
         tracks.push({
           id: trackId,
           title,
           artists: [{ id: `local-artist:${Buffer.from(artist).toString('base64')}`, name: artist }],
           album: {
-            id: `local-album:${Buffer.from(path.basename(path.dirname(filePath))).toString('base64')}`,
-            title: path.basename(path.dirname(filePath))
+            id: `local-album:${Buffer.from(path.basename(path.dirname(fp))).toString('base64')}`,
+            title: path.basename(path.dirname(fp))
           },
           duration: 0,
           artwork: undefined,
           streamInfo: {
-            url: `local-audio://localhost${filePath}`,
+            url: `local-audio://localhost${fp}`,
             format: ext.slice(1),
             quality: 'lossless',
             expiresAt: null
           },
           streamSources: [{
             providerId: 'local-file',
-            trackId: filePath,
+            trackId: fp,
             available: true
           }],
           _meta: {
@@ -1774,7 +1775,7 @@ function setupIPCHandlers(): void {
             needsEnrichment: true,
             missingFields: ['artwork', 'genre', 'year']
           },
-          _localPath: filePath
+          _localPath: fp
         });
       }
 
@@ -1839,7 +1840,7 @@ function setupIPCHandlers(): void {
     const matchFn = async (tracksToMatch: Array<{ id: string; title: string; artist: string; album?: string; duration?: number }>) => {
       try {
         // Try to use the sposify plugin for matching
-        const sposifyAddon = registry.getAddon('sposify');
+        const sposifyAddon = (registry as any).getAddon?.('sposify');
         if (sposifyAddon && 'matchByMetadata' in sposifyAddon) {
           const matches = await (sposifyAddon as any).matchByMetadata(
             tracksToMatch.map(t => ({
@@ -1872,26 +1873,28 @@ function setupIPCHandlers(): void {
         const results = [];
         for (const track of tracksToMatch) {
           try {
-            const searchResult = await searchOrchestrator.search({
-              query: `${track.artist} ${track.title}`,
-              type: 'track',
-              limit: 1
-            });
+            const searchResult = await searchOrchestrator.search(
+              `${track.artist} ${track.title}`
+            );
 
             if (searchResult.tracks && searchResult.tracks.length > 0) {
               const match = searchResult.tracks[0];
-              results.push({
-                matched: true,
-                confidence: 0.8,
-                source: 'search',
-                metadata: {
-                  title: match.title,
-                  artists: match.artists?.map(a => a.name) || [],
-                  album: match.album?.title,
-                  artwork: match.artwork || match.album?.artwork,
-                  duration: match.duration
-                }
-              });
+              if (match) {
+                results.push({
+                  matched: true,
+                  confidence: 0.8,
+                  source: 'search',
+                  metadata: {
+                    title: match.title,
+                    artists: match.artists?.map(a => a.name) || [],
+                    album: match.album?.title,
+                    artwork: match.artwork || match.album?.artwork,
+                    duration: match.duration
+                  }
+                });
+              } else {
+                results.push({ matched: false, confidence: 0 });
+              }
             } else {
               results.push({ matched: false, confidence: 0 });
             }

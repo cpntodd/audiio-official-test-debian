@@ -16,6 +16,8 @@
     "@audiio/core": "*",
     "@audiio/sdk": "*",
     "@audiio/mobile": "*",
+    "music-metadata": "^10.6.4",
+    "node-id3": "^0.2.6",
     "socket.io-client": "^4.7.0"
   },
   "optionalDependencies": {

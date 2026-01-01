@@ -55,8 +55,10 @@ export const FreshFindsSection: React.FC<FreshFindsSectionProps> = ({
     play(track);
   };
 
-  // Show empty state instead of hiding completely
-  const showEmptyState = !isLoading && tracks.length === 0;
+  // Hide section when no data available
+  if (!isLoading && tracks.length === 0) {
+    return null;
+  }
 
   return (
     <section id={id} className="discover-horizontal-section discover-fresh-finds-section">
@@ -77,10 +79,6 @@ export const FreshFindsSection: React.FC<FreshFindsSectionProps> = ({
           {[1, 2, 3, 4, 5, 6].map(i => (
             <div key={i} className="discover-card-skeleton" />
           ))}
-        </div>
-      ) : showEmptyState ? (
-        <div className="discover-empty-state">
-          <p>Discovering fresh music...</p>
         </div>
       ) : (
         <div className="discover-horizontal-scroll">

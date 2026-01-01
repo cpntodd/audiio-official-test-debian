@@ -66,9 +66,9 @@ export const AudioAnalysisSection: React.FC<AudioAnalysisSectionProps> = ({
     limit: maxItems,
   }), [sectionTitle, sectionSubtitle, method, mood, analysisType, maxItems]);
 
-  // Use unified plugin pipeline - embeddingProvider handles generation
+  // Use unified plugin pipeline - only if we have audio processor capability
   const { tracks, isLoading } = usePluginData(structuredQuery, {
-    enabled: true,
+    enabled: hasAudioProcessor,
     applyMLRanking: true,
     applyTransformers: true,
     limit: maxItems,

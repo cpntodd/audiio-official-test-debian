@@ -87,6 +87,7 @@ interface LibraryState {
   getOrCreateLocalFolderPlaylist: (localFolderId: string, folderName: string) => Playlist;
   setLocalFolderPlaylistTracks: (localFolderId: string, folderName: string, tracks: UnifiedTrack[]) => void;
   deleteLocalFolderPlaylist: (localFolderId: string) => void;
+  getLocalFolderTracks: (localFolderId: string) => UnifiedTrack[];
 
   // Actions - Folders
   createFolder: (name: string, parentId?: string | null) => PlaylistFolder;
@@ -337,6 +338,12 @@ export const useLibraryStore = create<LibraryState>()(
         set((state) => ({
           playlists: state.playlists.filter(p => p.localFolderId !== localFolderId)
         }));
+      },
+
+      getLocalFolderTracks: (localFolderId) => {
+        const { playlists } = get();
+        const playlist = playlists.find(p => p.localFolderId === localFolderId);
+        return playlist?.tracks || [];
       },
 
       // Folders

@@ -9,7 +9,9 @@ import type {
   StreamProvider,
   LyricsProvider,
   Scrobbler,
-  Tool
+  Tool,
+  ArtistEnrichmentProvider,
+  ArtistEnrichmentType
 } from '../types/addon';
 
 interface RegisteredAddon {
@@ -228,6 +230,47 @@ export class AddonRegistry {
       return tool;
     }
     return null;
+  }
+
+  /**
+   * Get all artist enrichment providers
+   */
+  getArtistEnrichmentProviders(): ArtistEnrichmentProvider[] {
+    const ids = this.roleIndex.get('artist-enrichment') || new Set();
+    return Array.from(ids)
+      .map(id => this.addons.get(id))
+      .filter((r): r is RegisteredAddon => r !== undefined && r.enabled)
+      .map(r => r.addon as ArtistEnrichmentProvider);
+  }
+
+  /**
+   * Get artist enrichment providers by enrichment type
+   */
+  getArtistEnrichmentProvidersByType(type: ArtistEnrichmentType): ArtistEnrichmentProvider[] {
+    return this.getArtistEnrichmentProviders().filter(p => p.enrichmentType === type);
+  }
+
+  /**
+   * Get artist enrichment provider by ID
+   */
+  getArtistEnrichmentProvider(id: string): ArtistEnrichmentProvider | null {
+    const provider = this.get<ArtistEnrichmentProvider>(id);
+    if (provider && provider.manifest.roles.includes('artist-enrichment')) {
+      return provider;
+    }
+    return null;
+  }
+
+  /**
+   * Get available enrichment types from registered providers
+   */
+  getAvailableEnrichmentTypes(): ArtistEnrichmentType[] {
+    const providers = this.getArtistEnrichmentProviders();
+    const types = new Set<ArtistEnrichmentType>();
+    for (const provider of providers) {
+      types.add(provider.enrichmentType);
+    }
+    return Array.from(types);
   }
 
   /**

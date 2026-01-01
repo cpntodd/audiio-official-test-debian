@@ -355,56 +355,91 @@ export const genreProvider: DataProvider = {
 
 /**
  * Mood Provider
- * Uses search with mood-related terms
+ * Handles mood-based sections: mood-playlist, activity, seasonal, focus-mode
+ * Uses search with mood-related terms from plugins
  */
 export const moodProvider: DataProvider = {
   id: `${CORE_PLUGIN_ID}:mood`,
   pluginId: CORE_PLUGIN_ID,
   priority: 70,
   name: 'Mood Provider',
-  description: 'Fetches tracks by mood',
+  description: 'Fetches tracks by mood for activities, seasons, and playlists',
 
   canProvide(query: StructuredSectionQuery): boolean {
+    // Handle all mood-based sections
+    const moodSections = [
+      'mood-playlist',
+      'activity',
+      'seasonal',
+      'focus-mode',
+    ];
     return (
-      query.sectionType === 'mood-playlist' ||
+      moodSections.includes(query.sectionType) ||
       query.embedding?.method === 'mood' ||
       !!query.embedding?.mood
     );
   },
 
   async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
-    const mood = context.query.embedding?.mood;
-    if (!mood) {
-      return [];
-    }
+    const { query } = context;
 
-    // Map moods to search terms
+    // Get mood from embedding or section-specific logic
+    let mood = query.embedding?.mood;
+    let searchTerms = '';
+
+    // Extended mood mappings for all use cases
     const moodSearchTerms: Record<string, string> = {
-      chill: 'chill relaxing lofi ambient',
-      energetic: 'upbeat energetic workout dance',
-      happy: 'happy feel good positive',
-      sad: 'sad emotional melancholy',
-      focus: 'focus concentration instrumental ambient',
-      party: 'party dance club hits',
+      // Basic moods
+      chill: 'chill relaxing lofi ambient calm',
+      energetic: 'upbeat energetic workout dance edm',
+      happy: 'happy feel good positive uplifting',
+      sad: 'sad emotional melancholy acoustic',
+      focus: 'focus concentration instrumental ambient study',
+      party: 'party dance club hits electronic',
       romantic: 'romantic love songs ballads',
-      angry: 'aggressive intense heavy',
+      uplifting: 'uplifting motivational inspiring positive',
+      // Activity-specific
+      workout: 'workout gym training high energy electronic',
+      running: 'running cardio high bpm energetic',
+      cooking: 'cooking jazz soul feel good',
+      gaming: 'gaming electronic intense epic',
+      study: 'study focus lo-fi instrumental concentration',
+      relaxing: 'relaxing calm peaceful ambient',
+      // Seasonal
+      winter: 'winter cozy acoustic warm indie',
+      spring: 'spring fresh uplifting indie pop',
+      summer: 'summer hits beach party tropical',
+      autumn: 'autumn fall chill acoustic indie',
     };
 
-    const searchTerms = moodSearchTerms[mood.toLowerCase()] || `${mood} music`;
+    // Use explicit search query from section if provided
+    if (query.search?.query) {
+      searchTerms = query.search.query;
+    } else if (mood) {
+      searchTerms = moodSearchTerms[mood.toLowerCase()] || `${mood} music`;
+    } else {
+      // Can't provide without mood
+      return [];
+    }
 
     try {
       if (!window.api?.search) {
         return [];
       }
 
-      console.log(`[MoodProvider] Searching for mood: ${mood} (${searchTerms})`);
+      console.log(`[MoodProvider] Searching: "${searchTerms}" for ${query.sectionType}`);
       const results = await window.api.search({
         query: searchTerms,
         type: 'track',
-        limit: context.query.limit || 30,
+        limit: query.limit || 30,
       });
 
-      return results || [];
+      if (results?.length) {
+        console.log(`[MoodProvider] Got ${results.length} tracks for ${mood || query.sectionType}`);
+        return results;
+      }
+
+      return [];
     } catch (error) {
       console.error('[MoodProvider] Error:', error);
       return [];
@@ -413,13 +448,93 @@ export const moodProvider: DataProvider = {
 };
 
 /**
+ * Decade Provider
+ * Handles decade-mix section with year-based filtering
+ */
+export const decadeProvider: DataProvider = {
+  id: `${CORE_PLUGIN_ID}:decade`,
+  pluginId: CORE_PLUGIN_ID,
+  priority: 75,
+  name: 'Decade Provider',
+  description: 'Fetches tracks by decade/era',
+
+  canProvide(query: StructuredSectionQuery): boolean {
+    return (
+      query.sectionType === 'decade-mix' ||
+      !!query.embedding?.yearRange
+    );
+  },
+
+  async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
+    const { query } = context;
+
+    // Use search query from section (contains decade-specific terms)
+    const searchQuery = query.search?.query;
+    const yearRange = query.embedding?.yearRange;
+
+    if (!searchQuery && !yearRange) {
+      return [];
+    }
+
+    try {
+      if (!window.api?.search) {
+        return [];
+      }
+
+      // Build search query with decade context
+      let finalQuery = searchQuery || '';
+      if (yearRange) {
+        const [startYear, endYear] = yearRange;
+        // Add year context if not already in query
+        if (!finalQuery.includes(String(startYear).slice(0, 3))) {
+          finalQuery += ` ${startYear}s hits`;
+        }
+      }
+
+      console.log(`[DecadeProvider] Searching: "${finalQuery}"`);
+      const results = await window.api.search({
+        query: finalQuery,
+        type: 'track',
+        limit: query.limit || 30,
+      });
+
+      if (results?.length) {
+        console.log(`[DecadeProvider] Got ${results.length} tracks`);
+
+        // If we have year range, prioritize tracks from that era
+        if (yearRange) {
+          const [startYear, endYear] = yearRange;
+          // Sort by how close the track's release year is to the target decade
+          // (if release year info is available)
+          return results.sort((a: any, b: any) => {
+            const yearA = a.album?.releaseDate ? new Date(a.album.releaseDate).getFullYear() : 0;
+            const yearB = b.album?.releaseDate ? new Date(b.album.releaseDate).getFullYear() : 0;
+            const inRangeA = yearA >= startYear && yearA <= endYear ? 1 : 0;
+            const inRangeB = yearB >= startYear && yearB <= endYear ? 1 : 0;
+            return inRangeB - inRangeA;
+          });
+        }
+
+        return results;
+      }
+
+      return [];
+    } catch (error) {
+      console.error('[DecadeProvider] Error:', error);
+      return [];
+    }
+  },
+};
+
+/**
  * Personalized Provider
  * Uses ML recommendations and user profile for personalized content
+ * NO FALLBACK - if ML isn't available, section should hide
  */
 export const personalizedProvider: DataProvider = {
   id: `${CORE_PLUGIN_ID}:personalized`,
   pluginId: CORE_PLUGIN_ID,
-  priority: 80, // High priority for personalized sections
+  priority: 80,
   name: 'Personalized Provider',
   description: 'Provides personalized recommendations via ML',
 
@@ -441,7 +556,7 @@ export const personalizedProvider: DataProvider = {
 
   async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
     try {
-      // Try ML recommendations first
+      // Only use ML recommendations - no generic fallback
       if (window.api?.algoGetRecommendations) {
         console.log('[PersonalizedProvider] Getting ML recommendations...');
         const recommendations = await window.api.algoGetRecommendations(
@@ -453,25 +568,8 @@ export const personalizedProvider: DataProvider = {
         }
       }
 
-      // Fallback: Use search with personalized terms
-      if (window.api?.search) {
-        const topGenre = Object.entries(context.userProfile.genrePreferences || {})
-          .sort(([, a], [, b]) => b.totalListenTime - a.totalListenTime)
-          .map(([genre]) => genre)[0];
-
-        const searchQuery = topGenre
-          ? `${topGenre} popular recommended`
-          : 'popular recommended music 2024';
-
-        console.log(`[PersonalizedProvider] Fallback search: ${searchQuery}`);
-        const results = await window.api.search({
-          query: searchQuery,
-          type: 'track',
-          limit: context.query.limit || 30,
-        });
-        return results || [];
-      }
-
+      // No fallback - return empty, section will hide
+      console.log('[PersonalizedProvider] No ML data available, section will hide');
       return [];
     } catch (error) {
       console.error('[PersonalizedProvider] Error:', error);
@@ -482,7 +580,9 @@ export const personalizedProvider: DataProvider = {
 
 /**
  * Discovery Provider
- * Uses trending + randomization for fresh discovery
+ * ONLY handles explicit discovery sections that need fresh/random content
+ * Does NOT handle specialty sections (decade, seasonal, activity, etc.)
+ * NO GENERIC FALLBACK - sections hide if no data
  */
 export const discoveryProvider: DataProvider = {
   id: `${CORE_PLUGIN_ID}:discovery`,
@@ -492,20 +592,13 @@ export const discoveryProvider: DataProvider = {
   description: 'Provides fresh discovery tracks',
 
   canProvide(query: StructuredSectionQuery): boolean {
+    // Only handle true discovery sections - NOT specialty sections
     const discoverySections = [
       'fresh-finds',
       'deep-cuts',
       'blind-picks',
       'discover-weekly',
       'discovery',
-      // Additional discovery-style sections
-      'decade-mix',
-      'seasonal',
-      'activity',
-      'focus-mode',
-      'audio-analysis',
-      'streaming-highlights',
-      'lyrics-highlight',
     ];
     return (
       discoverySections.includes(query.sectionType) ||
@@ -515,7 +608,7 @@ export const discoveryProvider: DataProvider = {
 
   async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
     try {
-      // Get trending as base (reuse cached trending data)
+      // Use trending data for discovery - shuffled for variety
       if (window.api?.getTrending) {
         const trending = await dedupedRequest('trending', async () => {
           return await window.api.getTrending();
@@ -542,27 +635,8 @@ export const discoveryProvider: DataProvider = {
         }
       }
 
-      // Fallback to search
-      if (window.api?.search) {
-        const queries = [
-          'new music 2025',
-          'trending indie',
-          'undiscovered artists',
-          'fresh releases',
-        ];
-        const randomQuery = queries[Math.floor(Math.random() * queries.length)];
-
-        const results = await dedupedRequest(`search:${randomQuery}`, async () => {
-          return await window.api.search({
-            query: randomQuery,
-            type: 'track',
-            limit: context.query.limit || 30,
-          });
-        });
-
-        return results || [];
-      }
-
+      // No fallback - return empty, section will hide
+      console.log('[DiscoveryProvider] No trending data available, section will hide');
       return [];
     } catch (error) {
       console.error('[DiscoveryProvider] Error:', error);
@@ -573,6 +647,8 @@ export const discoveryProvider: DataProvider = {
 
 /**
  * New Releases Provider
+ * Uses getNewReleases API or trending with recency filter
+ * NO GENERIC FALLBACK
  */
 export const newReleasesProvider: DataProvider = {
   id: `${CORE_PLUGIN_ID}:new-releases`,
@@ -587,24 +663,46 @@ export const newReleasesProvider: DataProvider = {
 
   async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
     try {
-      if (!window.api?.search) {
-        return [];
+      // Try dedicated new releases API first
+      if (window.api?.getNewReleases) {
+        console.log('[NewReleasesProvider] Using getNewReleases API...');
+        const releases = await window.api.getNewReleases({
+          genre: context.query.embedding?.genre,
+          limit: context.query.limit || 30,
+        });
+        if (releases?.length) {
+          console.log(`[NewReleasesProvider] Got ${releases.length} new releases`);
+          return releases;
+        }
       }
 
-      // Use genre from context if available
-      const genre = context.query.embedding?.genre || '';
-      const searchQuery = genre
-        ? `new releases ${genre} 2024`
-        : 'new releases 2024 latest music';
+      // Fall back to trending (which often includes recent releases)
+      if (window.api?.getTrending) {
+        const trending = await dedupedRequest('trending', async () => {
+          return await window.api.getTrending();
+        });
 
-      console.log(`[NewReleasesProvider] Searching: ${searchQuery}`);
-      const results = await window.api.search({
-        query: searchQuery,
-        type: 'track',
-        limit: context.query.limit || 30,
-      });
+        const tracksArray = Array.isArray(trending?.tracks) ? trending.tracks : [];
+        if (tracksArray.length > 0) {
+          // Filter/prioritize recent tracks if release date is available
+          const tracks: UnifiedTrack[] = tracksArray.map((track: any) => ({
+            ...track,
+            id: track.id?.startsWith?.('deezer:') ? track.id : `deezer:${track.id}`,
+            streamSources: track.streamSources || [],
+            _meta: {
+              metadataProvider: track._provider || 'new-releases',
+              matchConfidence: 1,
+              externalIds: track.externalIds || {},
+              lastUpdated: new Date().toISOString(),
+            },
+          }));
+          return tracks.slice(0, context.query.limit || 30);
+        }
+      }
 
-      return results || [];
+      // No data available
+      console.log('[NewReleasesProvider] No new releases data, section will hide');
+      return [];
     } catch (error) {
       console.error('[NewReleasesProvider] Error:', error);
       return [];
@@ -614,14 +712,15 @@ export const newReleasesProvider: DataProvider = {
 
 /**
  * Layout/General Provider
- * Fallback for layout sections (horizontal, grid, hero, etc.) that use search queries
+ * Handles layout sections that have explicit search queries or embedding config
+ * NO GENERIC FALLBACK - only uses data from section config
  */
 export const layoutProvider: DataProvider = {
   id: `${CORE_PLUGIN_ID}:layout`,
   pluginId: CORE_PLUGIN_ID,
-  priority: 50, // Lower priority - acts as fallback
+  priority: 50,
   name: 'Layout Provider',
-  description: 'Fallback for layout sections using search',
+  description: 'Handles layout sections with explicit queries',
 
   canProvide(query: StructuredSectionQuery): boolean {
     const layoutSections = [
@@ -636,32 +735,29 @@ export const layoutProvider: DataProvider = {
       'artist-spotlight',
       'mood-gradient',
     ];
-    // ONLY provide for explicit layout sections - no catch-all fallback
-    // Each section type should have its own specific provider
-    return layoutSections.includes(query.sectionType);
+    // Only provide if section has explicit search query or embedding config
+    return layoutSections.includes(query.sectionType) &&
+           !!(query.search?.query || query.embedding?.genre || query.embedding?.mood);
   },
 
   async provide(context: SeeAllContext): Promise<UnifiedTrack[]> {
     try {
-      // Build search query from context
-      let searchQuery = '';
+      // Only use explicit search query from section config
+      const searchQuery = context.query.search?.query;
 
-      // Use title/subtitle for context
-      if (context.query.title) {
-        searchQuery = context.query.title;
+      // Or build from explicit embedding hints (genre/mood)
+      let queryToUse = searchQuery || '';
+      if (!queryToUse && context.query.embedding?.genre) {
+        queryToUse = `${context.query.embedding.genre} music`;
+      }
+      if (!queryToUse && context.query.embedding?.mood) {
+        queryToUse = `${context.query.embedding.mood} music`;
       }
 
-      // Add genre/mood hints from embedding
-      if (context.query.embedding?.genre) {
-        searchQuery += ` ${context.query.embedding.genre}`;
-      }
-      if (context.query.embedding?.mood) {
-        searchQuery += ` ${context.query.embedding.mood}`;
-      }
-
-      // Fallback to generic popular music
-      if (!searchQuery.trim()) {
-        searchQuery = 'popular hits music 2024';
+      // No query = no results (section will hide)
+      if (!queryToUse.trim()) {
+        console.log('[LayoutProvider] No explicit query, section will hide');
+        return [];
       }
 
       if (!window.api?.search) {
@@ -669,10 +765,10 @@ export const layoutProvider: DataProvider = {
         return [];
       }
 
-      console.log(`[LayoutProvider] Searching for: ${searchQuery}`);
-      const results = await dedupedRequest(`layout:${context.query.sectionType}:${searchQuery}`, async () => {
+      console.log(`[LayoutProvider] Searching for: ${queryToUse}`);
+      const results = await dedupedRequest(`layout:${context.query.sectionType}:${queryToUse}`, async () => {
         return await window.api.search({
-          query: searchQuery,
+          query: queryToUse,
           type: 'track',
           limit: context.query.limit || 30,
         });
@@ -709,30 +805,31 @@ const embeddingProvider: DataProvider = {
   priority: 95, // High priority - library-first approach
 
   canProvide(query: StructuredSectionQuery): boolean {
-    // Handle embedding-based sections that need personalization
+    // Handle embedding-based sections that benefit from ML personalization
     const embeddingSections = [
-      // Personalized sections
+      // Personalized sections (require user taste data)
       'quick-picks',
       'time-greeting',
       'on-repeat',
       'top-mix',
       'rediscover',
       'discover-weekly',
-      // Mood/energy sections
+      // Mood/activity sections (ML enhances mood matching)
       'mood-playlist',
       'focus-mode',
       'activity',
-      // Discovery sections that benefit from ML
-      'deep-cuts',
-      'audio-analysis',
-      'streaming-highlights',
-      'lyrics-highlight',
-      // Hero section for personalized hero
+      'seasonal',
+      // Genre/decade sections (ML can personalize within category)
+      'genre-explorer',
+      'decade-mix',
+      // Hero section (personalized content)
       'hero',
-      // Artist-based sections
+      // Artist-based (uses similarity embeddings)
       'artist-radio',
-      // Generic section type for useSectionTracks
-      'generic',
+      // Discovery sections (ML adds personalization)
+      'fresh-finds',
+      'deep-cuts',
+      'blind-picks',
     ];
 
     // Check if section type matches
@@ -743,6 +840,7 @@ const embeddingProvider: DataProvider = {
     // Also handle queries with explicit embedding method
     if (query.embedding?.method === 'personalized' ||
         query.embedding?.method === 'mood' ||
+        query.embedding?.method === 'genre' ||
         query.embedding?.method === 'discovery' ||
         query.embedding?.method === 'artist-radio' ||
         query.embedding?.method === 'similar') {
@@ -802,20 +900,37 @@ const embeddingProvider: DataProvider = {
 
         case 'activity':
           method = 'mood';
-          mood = 'energetic';
+          mood = query.embedding?.mood || 'energetic';
+          exploration = 0.25;
+          break;
+
+        case 'seasonal':
+          method = 'mood';
+          mood = query.embedding?.mood || 'chill';
+          exploration = 0.4;
+          break;
+
+        case 'genre-explorer':
+          method = 'genre';
+          genre = query.embedding?.genre;
+          exploration = 0.5;
+          break;
+
+        case 'decade-mix':
+          method = 'discovery';
+          exploration = 0.3;
           break;
 
         case 'discover-weekly':
-        case 'deep-cuts':
         case 'rediscover':
+        case 'fresh-finds':
+        case 'deep-cuts':
+        case 'blind-picks':
           method = 'discovery';
-          exploration = 0.6;
+          exploration = query.embedding?.exploration || 0.6;
           break;
 
         case 'hero':
-        case 'audio-analysis':
-        case 'streaming-highlights':
-        case 'lyrics-highlight':
           method = 'personalized';
           exploration = 0.3;
           break;
@@ -835,7 +950,7 @@ const embeddingProvider: DataProvider = {
             genre = query.embedding.genre;
           } else if (query.embedding?.method === 'discovery') {
             method = 'discovery';
-            exploration = query.embedding.exploration || 0.7;
+            exploration = query.embedding.exploration || 0.6;
           } else if (query.embedding?.method === 'artist-radio') {
             method = 'artist-radio';
             exploration = query.embedding.exploration || 0.3;
@@ -877,16 +992,17 @@ const embeddingProvider: DataProvider = {
  */
 export const coreProviders: DataProvider[] = [
   trendingProvider,      // 100 - Charts/trending
-  embeddingProvider,     // 95  - Library ML personalization (NEW!)
+  embeddingProvider,     // 95  - Library ML personalization
   artistRadioProvider,   // 90  - Artist-based radio
   similarTracksProvider, // 85  - Similar tracks
   searchProvider,        // 80  - Text search
   personalizedProvider,  // 80  - API recommendations
+  decadeProvider,        // 75  - Decade/era-based content
   newReleasesProvider,   // 75  - New releases
   genreProvider,         // 75  - Genre search
-  moodProvider,          // 70  - Mood search
+  moodProvider,          // 70  - Mood/activity/seasonal
   discoveryProvider,     // 65  - Discovery sections
-  layoutProvider,        // 50  - Fallback layout
+  layoutProvider,        // 50  - Layout sections with explicit queries
 ];
 
 // Guard to prevent duplicate registration
