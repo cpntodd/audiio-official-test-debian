@@ -1,67 +1,34 @@
 /**
- * MobileAccessSettings - Configure mobile portal access
+ * MobileAccessSettings - Simplified mobile/remote access configuration
  *
- * Apple-style privacy-first design with clear user communication
+ * Single pairing code flow with auto-routing between local and remote
  */
 
 import React, { useState, useEffect } from 'react';
+import { useSettingsStore } from '../../stores/settings-store';
 
 // Types
-interface AccessConfig {
-  token: string;
-  localUrl: string;
-  tunnelUrl?: string;
-  tunnelPassword?: string;
+interface PairingConfig {
+  code: string;
   qrCode?: string;
-  createdAt: number;
-  relayCode?: string;
-  relayPublicKey?: string;
-  relayActive?: boolean;
-  remoteQrCode?: string;
+  localUrl: string;
+  expiresAt: number;
+  relayActive: boolean;
 }
 
-interface MobileSession {
-  id: string;
-  deviceName?: string;
-  connectedAt: number;
-  lastActivity: number;
-  isActive: boolean;
-}
-
-interface AuthorizedDevice {
+interface PairedDevice {
   id: string;
   name: string;
   createdAt: string;
   lastAccessAt: string;
-  expiresAt: string | null;
-}
-
-interface AuthSettings {
-  useCustomPassword: boolean;
-  defaultExpirationDays: number | null;
-  requirePasswordEveryTime: boolean;
-}
-
-interface DeviceApprovalRequest {
-  id: string;
-  deviceName: string;
-  userAgent: string;
 }
 
 interface MobileAccessState {
   isEnabled: boolean;
   isLoading: boolean;
-  accessConfig: AccessConfig | null;
-  sessions: MobileSession[];
-  enableRemoteAccess: boolean;
+  pairing: PairingConfig | null;
+  devices: PairedDevice[];
   hasAcceptedPrivacy: boolean;
-  passphrase: string | null;
-  authorizedDevices: AuthorizedDevice[];
-  authSettings: AuthSettings;
-  showCustomPasswordForm: boolean;
-  customPassword: string;
-  customPasswordError: string | null;
-  pendingApproval: DeviceApprovalRequest | null;
 }
 
 // ========================================
@@ -94,7 +61,7 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
               </div>
               <div className="mobile-privacy-feature-info">
                 <h4>Secure Connection</h4>
-                <p>Each session uses a unique, randomly generated access token. Only devices with your token can connect.</p>
+                <p>All connections are end-to-end encrypted. Only devices with your code can connect.</p>
               </div>
             </div>
 
@@ -104,7 +71,7 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
               </div>
               <div className="mobile-privacy-feature-info">
                 <h4>Your Data Stays Yours</h4>
-                <p>Music streams directly from your computer. No data is sent to external servers or stored in the cloud.</p>
+                <p>Music streams directly from your computer. No data is stored in the cloud.</p>
               </div>
             </div>
 
@@ -114,7 +81,7 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
               </div>
               <div className="mobile-privacy-feature-info">
                 <h4>You're in Control</h4>
-                <p>See all connected devices, disconnect any session instantly, or regenerate your access token at any time.</p>
+                <p>See all paired devices and revoke access anytime.</p>
               </div>
             </div>
           </div>
@@ -122,8 +89,8 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
           <div className="mobile-privacy-note">
             <InfoIcon size={16} />
             <p>
-              <strong>How it works:</strong> Audiio creates a personal server on your computer.
-              Scan the QR code with your phone to access your music library through a secure web portal.
+              <strong>How it works:</strong> Enter the code on your phone or scan the QR code.
+              Works on the same network or from anywhere.
             </p>
           </div>
         </div>
@@ -142,260 +109,24 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
 };
 
 // ========================================
-// Device Approval Dialog
+// Pairing Code Display
 // ========================================
 
-interface DeviceApprovalDialogProps {
-  request: DeviceApprovalRequest;
-  onApprove: () => void;
-  onDeny: () => void;
-}
-
-const DeviceApprovalDialog: React.FC<DeviceApprovalDialogProps> = ({ request, onApprove, onDeny }) => {
-  return (
-    <div className="mobile-approval-overlay">
-      <div className="mobile-approval-modal">
-        <div className="mobile-approval-icon">
-          <MobileIcon size={48} />
-        </div>
-
-        <h2 className="mobile-approval-title">New Device</h2>
-        <p className="mobile-approval-subtitle">
-          A device wants to connect
-        </p>
-
-        <div className="mobile-approval-device">
-          <div className="mobile-approval-device-name">{request.deviceName}</div>
-          <div className="mobile-approval-device-hint">
-            This device scanned your QR code
-          </div>
-        </div>
-
-        <div className="mobile-approval-actions">
-          <button
-            className="mobile-approval-btn mobile-approval-btn-approve"
-            onClick={onApprove}
-          >
-            <CheckIcon size={18} />
-            Allow Connection
-          </button>
-          <button
-            className="mobile-approval-btn mobile-approval-btn-deny"
-            onClick={onDeny}
-          >
-            Deny
-          </button>
-        </div>
-
-        <p className="mobile-approval-note">
-          Approved devices can stream your music library.
-          You can revoke access anytime from Device Management.
-        </p>
-      </div>
-    </div>
-  );
-};
-
-// ========================================
-// QR Code Display
-// ========================================
-
-interface QRCodeDisplayProps {
-  qrCode: string;
-  url: string;
-  isRemote: boolean;
-  tunnelPassword?: string;
-}
-
-const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ qrCode, url, isRemote, tunnelPassword }) => {
-  const [copied, setCopied] = useState(false);
-  const [passwordCopied, setPasswordCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for older browsers
-    }
-  };
-
-  const handleCopyPassword = async () => {
-    if (!tunnelPassword) return;
-    try {
-      await navigator.clipboard.writeText(tunnelPassword);
-      setPasswordCopied(true);
-      setTimeout(() => setPasswordCopied(false), 2000);
-    } catch {
-      // Fallback for older browsers
-    }
-  };
-
-  return (
-    <div className="mobile-qr-container">
-      <div className="mobile-qr-card">
-        {qrCode ? (
-          <img src={qrCode} alt="Scan to connect" className="mobile-qr-image" />
-        ) : (
-          <div className="mobile-qr-placeholder">
-            <QRIcon size={64} />
-          </div>
-        )}
-      </div>
-
-      <div className="mobile-qr-info">
-        <p className="mobile-qr-instruction">
-          Scan with your phone's camera to connect instantly
-        </p>
-        <p className="mobile-qr-hint">
-          One-time setup - your device will be remembered
-        </p>
-        <div className="mobile-qr-url-row">
-          <span className="mobile-qr-badge">
-            {isRemote ? 'Remote' : 'Local Network'}
-          </span>
-          <button className="mobile-qr-copy" onClick={handleCopy}>
-            {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-            {copied ? 'Copied!' : 'Copy Link'}
-          </button>
-        </div>
-
-        {/* Tunnel bypass password notice */}
-        {isRemote && tunnelPassword && (
-          <div className="mobile-tunnel-password">
-            <div className="mobile-tunnel-password-header">
-              <ShieldIcon size={16} />
-              <span>Security Code Required</span>
-            </div>
-            <p className="mobile-tunnel-password-hint">
-              When opening the link, you'll see a security page from <strong>loca.lt</strong>.
-              Enter this code in the "Endpoint IP" field:
-            </p>
-            <div className="mobile-tunnel-password-value">
-              <code>{tunnelPassword}</code>
-              <button
-                className="mobile-qr-copy"
-                onClick={handleCopyPassword}
-                title="Copy code"
-              >
-                {passwordCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-                {passwordCopied ? 'Copied!' : 'Copy'}
-              </button>
-            </div>
-            <p className="mobile-tunnel-password-note">
-              This is a one-time security check. After entering, you'll be connected to Audiio.
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// ========================================
-// QR Code Tabs (Local + Remote)
-// ========================================
-
-interface QRCodeTabsProps {
-  localQrCode: string;
-  remoteQrCode: string;
-  localUrl: string;
-  relayCode: string;
-}
-
-const QRCodeTabs: React.FC<QRCodeTabsProps> = ({ localQrCode, remoteQrCode, localUrl, relayCode }) => {
-  const [activeTab, setActiveTab] = useState<'remote' | 'local'>('remote');
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    const textToCopy = activeTab === 'remote' ? relayCode : localUrl;
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for older browsers
-    }
-  };
-
-  return (
-    <div className="mobile-qr-tabs-container">
-      {/* Tab Buttons */}
-      <div className="mobile-qr-tabs">
-        <button
-          type="button"
-          className={`mobile-qr-tab ${activeTab === 'remote' ? 'active' : ''}`}
-          onClick={() => setActiveTab('remote')}
-        >
-          <GlobeIcon size={14} />
-          Anywhere
-        </button>
-        <button
-          type="button"
-          className={`mobile-qr-tab ${activeTab === 'local' ? 'active' : ''}`}
-          onClick={() => setActiveTab('local')}
-        >
-          <WifiIcon size={14} />
-          Same Network
-        </button>
-      </div>
-
-      {/* QR Code Display */}
-      <div className="mobile-qr-card">
-        <img
-          src={activeTab === 'remote' ? remoteQrCode : localQrCode}
-          alt={`Scan to connect via ${activeTab === 'remote' ? 'P2P' : 'local network'}`}
-          className="mobile-qr-image"
-        />
-      </div>
-
-      {/* Info Section */}
-      <div className="mobile-qr-info">
-        {activeTab === 'remote' ? (
-          <>
-            <p className="mobile-qr-instruction">
-              Scan to connect from anywhere
-            </p>
-            <p className="mobile-qr-hint">
-              Works on cellular, any WiFi, or VPN — no port forwarding needed
-            </p>
-          </>
-        ) : (
-          <>
-            <p className="mobile-qr-instruction">
-              Scan to connect on the same network
-            </p>
-            <p className="mobile-qr-hint">
-              One-time setup — your device will be remembered
-            </p>
-          </>
-        )}
-
-        <div className="mobile-qr-url-row">
-          <span className="mobile-qr-badge">
-            {activeTab === 'remote' ? 'P2P Connection' : 'Local Network'}
-          </span>
-          <button className="mobile-qr-copy" onClick={handleCopy}>
-            {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-            {copied ? 'Copied!' : activeTab === 'remote' ? 'Copy Code' : 'Copy Link'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ========================================
-// Relay Code Display
-// ========================================
-
-interface RelayCodeDisplayProps {
+interface PairingCodeDisplayProps {
   code: string;
+  qrCode?: string;
   isActive: boolean;
+  onRefresh: () => void;
+  isLoading: boolean;
 }
 
-const RelayCodeDisplay: React.FC<RelayCodeDisplayProps> = ({ code, isActive }) => {
+const PairingCodeDisplay: React.FC<PairingCodeDisplayProps> = ({
+  code,
+  qrCode,
+  isActive,
+  onRefresh,
+  isLoading
+}) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -408,217 +139,164 @@ const RelayCodeDisplay: React.FC<RelayCodeDisplayProps> = ({ code, isActive }) =
     }
   };
 
-  if (!code) return null;
-
   return (
-    <div className="mobile-relay-container">
-      <div className="mobile-relay-header">
-        <div className="mobile-relay-status">
-          <span className={`mobile-relay-indicator ${isActive ? 'active' : ''}`} />
-          <span>Relay {isActive ? 'Active' : 'Connecting...'}</span>
-        </div>
-        <LinkIcon size={16} />
+    <div className="mobile-pairing-container">
+      {/* Status indicator */}
+      <div className="mobile-pairing-status">
+        <span className={`mobile-pairing-indicator ${isActive ? 'active' : ''}`} />
+        <span>{isActive ? 'Ready to connect' : 'Connecting...'}</span>
       </div>
 
-      <div className="mobile-relay-code-card">
-        <div className="mobile-relay-code">
+      {/* Code display */}
+      <div className="mobile-pairing-code-card">
+        <div className="mobile-pairing-code">
           {code.split('-').map((part, idx) => (
             <React.Fragment key={idx}>
-              {idx > 0 && <span className="mobile-relay-separator">-</span>}
-              <span className="mobile-relay-code-part">{part}</span>
+              {idx > 0 && <span className="mobile-pairing-separator">-</span>}
+              <span className="mobile-pairing-code-part">{part}</span>
             </React.Fragment>
           ))}
         </div>
-        <button className="mobile-relay-copy" onClick={handleCopy}>
-          {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
+        <div className="mobile-pairing-actions">
+          <button
+            className="mobile-pairing-btn"
+            onClick={handleCopy}
+            title="Copy code"
+          >
+            {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
+          </button>
+          <button
+            className="mobile-pairing-btn"
+            onClick={onRefresh}
+            disabled={isLoading}
+            title="Generate new code"
+          >
+            <RefreshIcon size={16} />
+          </button>
+        </div>
       </div>
 
-      <p className="mobile-relay-hint">
-        Enter this code on your mobile device to connect from anywhere.
-        Works across different networks - no need to be on the same WiFi.
+      {/* QR Code */}
+      {qrCode && (
+        <div className="mobile-pairing-qr">
+          <img src={qrCode} alt="Scan to connect" className="mobile-pairing-qr-image" />
+        </div>
+      )}
+
+      <p className="mobile-pairing-hint">
+        Enter this code on your mobile device or scan the QR code.
+        Works from any network.
       </p>
     </div>
   );
 };
 
 // ========================================
-// Connected Devices
+// Relay Settings
 // ========================================
 
-interface ConnectedDevicesProps {
-  sessions: MobileSession[];
-  onDisconnect: (sessionId: string) => void;
+interface RelaySettingsProps {
+  enabled: boolean;
+  customUrl: string | null;
+  onToggle: (enabled: boolean) => void;
+  onUrlChange: (url: string | null) => void;
 }
 
-const ConnectedDevices: React.FC<ConnectedDevicesProps> = ({ sessions, onDisconnect }) => {
-  const formatTime = (timestamp: number) => {
-    const diff = Date.now() - timestamp;
-    const minutes = Math.floor(diff / 60000);
-    if (minutes < 1) return 'Just now';
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return new Date(timestamp).toLocaleDateString();
-  };
-
-  if (sessions.length === 0) {
-    return (
-      <div className="mobile-devices-empty">
-        <DevicesIcon size={32} />
-        <p>No devices connected</p>
-        <span>Scan the QR code with your phone to get started</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mobile-devices-list">
-      {sessions.map(session => (
-        <div key={session.id} className="mobile-device-item">
-          <div className="mobile-device-icon">
-            <PhoneIcon size={20} />
-            <span className={`mobile-device-status ${session.isActive ? 'active' : ''}`} />
-          </div>
-          <div className="mobile-device-info">
-            <span className="mobile-device-name">{session.deviceName || 'Unknown Device'}</span>
-            <span className="mobile-device-time">
-              {session.isActive ? 'Active now' : `Last seen ${formatTime(session.lastActivity)}`}
-            </span>
-          </div>
-          <button
-            className="mobile-device-disconnect"
-            onClick={() => onDisconnect(session.id)}
-            title="Disconnect this device"
-          >
-            <CloseIcon size={16} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-// ========================================
-// Main Component
-// ========================================
-
-// ========================================
-// Passphrase Display
-// ========================================
-
-interface PassphraseDisplayProps {
-  passphrase: string | null;
-  useCustomPassword: boolean;
-  onRegenerate: () => void;
-  onShowCustomPasswordForm: () => void;
-  onRemoveCustomPassword: () => void;
-  isLoading: boolean;
-}
-
-const PassphraseDisplay: React.FC<PassphraseDisplayProps> = ({
-  passphrase,
-  useCustomPassword,
-  onRegenerate,
-  onShowCustomPasswordForm,
-  onRemoveCustomPassword,
-  isLoading
+const RelaySettings: React.FC<RelaySettingsProps> = ({
+  enabled,
+  customUrl,
+  onToggle,
+  onUrlChange
 }) => {
-  const [copied, setCopied] = useState(false);
-  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [urlInput, setUrlInput] = useState(customUrl || '');
+  const [showUrlInput, setShowUrlInput] = useState(!!customUrl);
 
-  const handleCopy = async () => {
-    if (!passphrase) return;
-    try {
-      await navigator.clipboard.writeText(passphrase);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for older browsers
-    }
+  const handleUrlSave = () => {
+    const trimmed = urlInput.trim();
+    onUrlChange(trimmed || null);
+  };
+
+  const handleUrlClear = () => {
+    setUrlInput('');
+    onUrlChange(null);
+    setShowUrlInput(false);
   };
 
   return (
-    <div className="mobile-passphrase-section">
-      <div className="mobile-access-section-header">
-        <KeyIcon size={16} />
-        <h4>Access Credentials</h4>
+    <div className="mobile-relay-settings">
+      {/* Remote access toggle */}
+      <div className="mobile-relay-option">
+        <div className="mobile-relay-option-info">
+          <div className="mobile-relay-option-row">
+            <GlobeIcon size={18} />
+            <h4>Remote Access</h4>
+          </div>
+          <p>Connect from anywhere via relay server</p>
+        </div>
+        <label className="mobile-access-toggle small">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
+          <span className="mobile-access-toggle-slider" />
+        </label>
       </div>
 
-      {useCustomPassword ? (
-        <div className="mobile-passphrase-card custom">
-          <div className="mobile-passphrase-info">
-            <span className="mobile-passphrase-label">Custom Password</span>
-            <span className="mobile-passphrase-value masked">••••••••</span>
-          </div>
-          <div className="mobile-passphrase-actions">
+      {/* Custom relay URL */}
+      {enabled && (
+        <div className="mobile-relay-url-section">
+          {showUrlInput ? (
+            <div className="mobile-relay-url-input-group">
+              <label className="mobile-relay-url-label">Relay Server</label>
+              <div className="mobile-relay-url-row">
+                <input
+                  type="text"
+                  className="mobile-relay-url-input"
+                  placeholder="wss://audiio-relay.fly.dev"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  onBlur={handleUrlSave}
+                  onKeyDown={(e) => e.key === 'Enter' && handleUrlSave()}
+                />
+                <button
+                  className="mobile-relay-url-clear"
+                  onClick={handleUrlClear}
+                  title="Use default"
+                >
+                  <CloseIcon size={14} />
+                </button>
+              </div>
+              <p className="mobile-relay-url-hint">
+                Leave empty to use the default relay
+              </p>
+            </div>
+          ) : (
             <button
-              className="mobile-passphrase-btn"
-              onClick={onRemoveCustomPassword}
-              disabled={isLoading}
+              className="mobile-relay-custom-btn"
+              onClick={() => setShowUrlInput(true)}
             >
-              Remove
+              <SettingsIcon size={14} />
+              Use custom relay server
             </button>
-          </div>
-        </div>
-      ) : (
-        <div className="mobile-passphrase-card">
-          <div className="mobile-passphrase-info">
-            <span className="mobile-passphrase-label">Passphrase</span>
-            <span className="mobile-passphrase-value">
-              {showPassphrase ? passphrase : '•••-•••-•••-••'}
-            </span>
-          </div>
-          <div className="mobile-passphrase-actions">
-            <button
-              className="mobile-passphrase-btn"
-              onClick={() => setShowPassphrase(!showPassphrase)}
-              title={showPassphrase ? 'Hide' : 'Show'}
-            >
-              {showPassphrase ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
-            </button>
-            <button
-              className="mobile-passphrase-btn"
-              onClick={handleCopy}
-              title="Copy"
-            >
-              {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
-            </button>
-            <button
-              className="mobile-passphrase-btn"
-              onClick={onRegenerate}
-              disabled={isLoading}
-              title="Generate new passphrase"
-            >
-              <RefreshIcon size={16} />
-            </button>
-          </div>
+          )}
         </div>
       )}
-
-      <button
-        className="mobile-custom-password-link"
-        onClick={useCustomPassword ? onRemoveCustomPassword : onShowCustomPasswordForm}
-      >
-        {useCustomPassword ? 'Use generated passphrase instead' : 'Set custom password instead'}
-      </button>
     </div>
   );
 };
 
 // ========================================
-// Authorized Devices List
+// Paired Devices List
 // ========================================
 
-interface AuthorizedDevicesProps {
-  devices: AuthorizedDevice[];
+interface PairedDevicesProps {
+  devices: PairedDevice[];
   onRevoke: (deviceId: string) => void;
   onRevokeAll: () => void;
-  onRename: (deviceId: string, name: string) => void;
 }
 
-const AuthorizedDevices: React.FC<AuthorizedDevicesProps> = ({
+const PairedDevices: React.FC<PairedDevicesProps> = ({
   devices,
   onRevoke,
   onRevokeAll
@@ -636,30 +314,18 @@ const AuthorizedDevices: React.FC<AuthorizedDevicesProps> = ({
     return date.toLocaleDateString();
   };
 
-  const formatExpiry = (expiresAt: string | null) => {
-    if (!expiresAt) return 'Never';
-    const date = new Date(expiresAt);
-    const diff = date.getTime() - Date.now();
-    if (diff < 0) return 'Expired';
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    if (days === 0) return 'Today';
-    if (days === 1) return 'Tomorrow';
-    if (days < 7) return `${days} days`;
-    return date.toLocaleDateString();
-  };
-
   if (devices.length === 0) {
     return (
       <div className="mobile-devices-empty">
         <DevicesIcon size={32} />
-        <p>No remembered devices</p>
-        <span>Devices that chose "Remember me" will appear here</span>
+        <p>No paired devices</p>
+        <span>Devices will appear here after connecting</span>
       </div>
     );
   }
 
   return (
-    <div className="mobile-authorized-devices">
+    <div className="mobile-paired-devices">
       <div className="mobile-devices-list">
         {devices.map(device => (
           <div key={device.id} className="mobile-device-item">
@@ -667,9 +333,9 @@ const AuthorizedDevices: React.FC<AuthorizedDevicesProps> = ({
               <PhoneIcon size={20} />
             </div>
             <div className="mobile-device-info">
-              <span className="mobile-device-name">{device.name}</span>
+              <span className="mobile-device-name">{device.name || 'Unknown Device'}</span>
               <span className="mobile-device-time">
-                Last seen {formatTime(device.lastAccessAt)} • Expires {formatExpiry(device.expiresAt)}
+                Last seen {formatTime(device.lastAccessAt)}
               </span>
             </div>
             <button
@@ -692,156 +358,23 @@ const AuthorizedDevices: React.FC<AuthorizedDevicesProps> = ({
 };
 
 // ========================================
-// Security Settings
-// ========================================
-
-interface SecuritySettingsProps {
-  settings: AuthSettings;
-  onUpdateSettings: (settings: Partial<AuthSettings>) => void;
-}
-
-const SecuritySettings: React.FC<SecuritySettingsProps> = ({ settings, onUpdateSettings }) => {
-  const expirationOptions = [
-    { value: 7, label: '7 days' },
-    { value: 30, label: '30 days' },
-    { value: 90, label: '90 days' },
-    { value: null, label: 'Never' }
-  ];
-
-  return (
-    <div className="mobile-security-settings">
-      <div className="mobile-access-section-header">
-        <ShieldIcon size={16} />
-        <h4>Security Settings</h4>
-      </div>
-
-      <div className="mobile-security-option">
-        <div className="mobile-security-option-info">
-          <span className="mobile-security-option-label">Device token expiration</span>
-          <span className="mobile-security-option-desc">
-            How long remembered devices stay authorized
-          </span>
-        </div>
-        <select
-          className="mobile-security-select"
-          value={settings.defaultExpirationDays ?? 'null'}
-          onChange={(e) => {
-            const value = e.target.value === 'null' ? null : parseInt(e.target.value, 10);
-            onUpdateSettings({ defaultExpirationDays: value });
-          }}
-        >
-          {expirationOptions.map(opt => (
-            <option key={opt.value ?? 'null'} value={opt.value ?? 'null'}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="mobile-security-option">
-        <div className="mobile-security-option-info">
-          <span className="mobile-security-option-label">Require password every time</span>
-          <span className="mobile-security-option-desc">
-            Always ask for password, even on remembered devices
-          </span>
-        </div>
-        <label className="mobile-access-toggle small">
-          <input
-            type="checkbox"
-            checked={settings.requirePasswordEveryTime}
-            onChange={(e) => onUpdateSettings({ requirePasswordEveryTime: e.target.checked })}
-          />
-          <span className="mobile-access-toggle-slider" />
-        </label>
-      </div>
-    </div>
-  );
-};
-
-// ========================================
-// Custom Password Form
-// ========================================
-
-interface CustomPasswordFormProps {
-  password: string;
-  error: string | null;
-  onPasswordChange: (password: string) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-  isLoading: boolean;
-}
-
-const CustomPasswordForm: React.FC<CustomPasswordFormProps> = ({
-  password,
-  error,
-  onPasswordChange,
-  onSubmit,
-  onCancel,
-  isLoading
-}) => {
-  return (
-    <div className="mobile-custom-password-form">
-      <div className="mobile-custom-password-header">
-        <h4>Set Custom Password</h4>
-        <button className="mobile-custom-password-close" onClick={onCancel}>
-          <CloseIcon size={16} />
-        </button>
-      </div>
-      <p className="mobile-custom-password-hint">
-        Enter a password that's at least 8 characters long. This will be used instead of the generated passphrase.
-      </p>
-      <input
-        type="password"
-        className="mobile-custom-password-input"
-        placeholder="Enter password"
-        value={password}
-        onChange={(e) => onPasswordChange(e.target.value)}
-        autoFocus
-      />
-      {error && <p className="mobile-custom-password-error">{error}</p>}
-      <div className="mobile-custom-password-actions">
-        <button
-          className="mobile-custom-password-btn secondary"
-          onClick={onCancel}
-          disabled={isLoading}
-        >
-          Cancel
-        </button>
-        <button
-          className="mobile-custom-password-btn primary"
-          onClick={onSubmit}
-          disabled={isLoading || password.length < 8}
-        >
-          Set Password
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// ========================================
 // Main Component
 // ========================================
 
 export const MobileAccessSettings: React.FC = () => {
+  const {
+    customRelayUrl,
+    remoteAccessEnabled,
+    setCustomRelayUrl,
+    setRemoteAccessEnabled
+  } = useSettingsStore();
+
   const [state, setState] = useState<MobileAccessState>({
     isEnabled: false,
     isLoading: true,
-    accessConfig: null,
-    sessions: [],
-    enableRemoteAccess: false,
-    hasAcceptedPrivacy: localStorage.getItem('audiio-mobile-privacy-accepted') === 'true',
-    passphrase: null,
-    authorizedDevices: [],
-    authSettings: {
-      useCustomPassword: false,
-      defaultExpirationDays: null, // Never expires by default
-      requirePasswordEveryTime: false
-    },
-    showCustomPasswordForm: false,
-    customPassword: '',
-    customPasswordError: null,
-    pendingApproval: null
+    pairing: null,
+    devices: [],
+    hasAcceptedPrivacy: localStorage.getItem('audiio-mobile-privacy-accepted') === 'true'
   });
 
   const [showPrivacy, setShowPrivacy] = useState(false);
@@ -851,70 +384,26 @@ export const MobileAccessSettings: React.FC = () => {
     loadMobileStatus();
   }, []);
 
-  // Load auth data when mobile is enabled
+  // Load devices when enabled
   useEffect(() => {
     if (state.isEnabled) {
-      loadAuthData();
+      loadDevices();
     }
   }, [state.isEnabled]);
 
-  // Listen for device approval requests
-  useEffect(() => {
-    // @ts-ignore - API exposed via preload
-    const unsubscribe = window.api?.onMobileDeviceApprovalRequest?.((request: DeviceApprovalRequest) => {
-      console.log('[MobileAccess] Device approval request:', request);
-      setState(prev => ({ ...prev, pendingApproval: request }));
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, []);
-
-  const handleApproveDevice = async () => {
-    if (!state.pendingApproval) return;
-
-    try {
-      // @ts-ignore - API exposed via preload
-      await window.api?.approveMobileDevice?.(state.pendingApproval.id);
-      setState(prev => ({ ...prev, pendingApproval: null }));
-      // Reload devices to show the new one
-      loadAuthData();
-    } catch (err) {
-      console.error('[MobileAccess] Error approving device:', err);
-    }
-  };
-
-  const handleDenyDevice = async () => {
-    if (!state.pendingApproval) return;
-
-    try {
-      // @ts-ignore - API exposed via preload
-      await window.api?.denyMobileDevice?.(state.pendingApproval.id);
-      setState(prev => ({ ...prev, pendingApproval: null }));
-    } catch (err) {
-      console.error('[MobileAccess] Error denying device:', err);
-    }
-  };
-
   const loadMobileStatus = async () => {
-    console.log('[MobileAccess] Loading status...');
     try {
       // @ts-ignore - API exposed via preload
       const status = await window.api?.getMobileStatus?.();
-      console.log('[MobileAccess] Status:', status);
 
       if (status) {
         setState(prev => ({
           ...prev,
           isEnabled: status.isEnabled,
-          accessConfig: status.accessConfig,
-          sessions: status.sessions || [],
-          enableRemoteAccess: status.enableRemoteAccess || false,
+          pairing: status.pairing || null,
           isLoading: false
         }));
       } else {
-        console.log('[MobileAccess] No status returned (API may not be available)');
         setState(prev => ({ ...prev, isLoading: false }));
       }
     } catch (err) {
@@ -923,153 +412,15 @@ export const MobileAccessSettings: React.FC = () => {
     }
   };
 
-  const loadAuthData = async () => {
+  const loadDevices = async () => {
     try {
       // @ts-ignore - API exposed via preload
-      const [passphraseResult, devicesResult, settingsResult] = await Promise.all([
-        window.api?.getMobilePassphrase?.(),
-        window.api?.getMobileDevices?.(),
-        window.api?.getMobileAuthSettings?.()
-      ]);
-
-      setState(prev => ({
-        ...prev,
-        passphrase: passphraseResult?.passphrase || null,
-        authorizedDevices: devicesResult?.devices || [],
-        authSettings: settingsResult || prev.authSettings
-      }));
+      const result = await window.api?.getMobileDevices?.();
+      if (result?.devices) {
+        setState(prev => ({ ...prev, devices: result.devices }));
+      }
     } catch (err) {
-      console.error('[MobileAccess] Error loading auth data:', err);
-    }
-  };
-
-  const handleRegeneratePassphrase = async () => {
-    setState(prev => ({ ...prev, isLoading: true }));
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.regenerateMobilePassphrase?.();
-      if (result?.success) {
-        setState(prev => ({
-          ...prev,
-          passphrase: result.passphrase,
-          authorizedDevices: [], // All devices revoked
-          isLoading: false
-        }));
-      } else {
-        setState(prev => ({ ...prev, isLoading: false }));
-      }
-    } catch (error) {
-      console.error('[MobileAccess] Failed to regenerate passphrase:', error);
-      setState(prev => ({ ...prev, isLoading: false }));
-    }
-  };
-
-  const handleSetCustomPassword = async () => {
-    setState(prev => ({ ...prev, isLoading: true, customPasswordError: null }));
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.setMobileCustomPassword?.(state.customPassword);
-      if (result?.success) {
-        setState(prev => ({
-          ...prev,
-          authSettings: { ...prev.authSettings, useCustomPassword: true },
-          authorizedDevices: [], // All devices revoked
-          showCustomPasswordForm: false,
-          customPassword: '',
-          isLoading: false
-        }));
-      } else {
-        setState(prev => ({
-          ...prev,
-          customPasswordError: result?.error || 'Failed to set password',
-          isLoading: false
-        }));
-      }
-    } catch (error) {
-      setState(prev => ({
-        ...prev,
-        customPasswordError: 'Failed to set password',
-        isLoading: false
-      }));
-    }
-  };
-
-  const handleRemoveCustomPassword = async () => {
-    setState(prev => ({ ...prev, isLoading: true }));
-    try {
-      // @ts-ignore - API exposed via preload
-      await window.api?.removeMobileCustomPassword?.();
-      setState(prev => ({
-        ...prev,
-        authSettings: { ...prev.authSettings, useCustomPassword: false },
-        isLoading: false
-      }));
-      // Reload passphrase
-      const result = await (window as any).api?.getMobilePassphrase?.();
-      if (result?.passphrase) {
-        setState(prev => ({ ...prev, passphrase: result.passphrase }));
-      }
-    } catch (error) {
-      setState(prev => ({ ...prev, isLoading: false }));
-    }
-  };
-
-  const handleRevokeDevice = async (deviceId: string) => {
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.revokeMobileDevice?.(deviceId);
-      if (result?.success) {
-        setState(prev => ({
-          ...prev,
-          authorizedDevices: prev.authorizedDevices.filter(d => d.id !== deviceId)
-        }));
-      }
-    } catch (error) {
-      console.error('[MobileAccess] Failed to revoke device:', error);
-    }
-  };
-
-  const handleRevokeAllDevices = async () => {
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.revokeAllMobileDevices?.();
-      if (result?.success) {
-        setState(prev => ({ ...prev, authorizedDevices: [] }));
-      }
-    } catch (error) {
-      console.error('[MobileAccess] Failed to revoke all devices:', error);
-    }
-  };
-
-  const handleRenameDevice = async (deviceId: string, name: string) => {
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.renameMobileDevice?.(deviceId, name);
-      if (result?.success) {
-        setState(prev => ({
-          ...prev,
-          authorizedDevices: prev.authorizedDevices.map(d =>
-            d.id === deviceId ? { ...d, name } : d
-          )
-        }));
-      }
-    } catch (error) {
-      console.error('[MobileAccess] Failed to rename device:', error);
-    }
-  };
-
-  const handleUpdateAuthSettings = async (settings: Partial<AuthSettings>) => {
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.updateMobileAuthSettings?.(settings);
-      if (result?.success) {
-        setState(prev => ({
-          ...prev,
-          authSettings: { ...prev.authSettings, ...settings }
-        }));
-      }
-    } catch (error) {
-      console.error('[MobileAccess] Failed to update settings:', error);
+      console.error('[MobileAccess] Error loading devices:', err);
     }
   };
 
@@ -1093,27 +444,27 @@ export const MobileAccessSettings: React.FC = () => {
   };
 
   const enableMobileAccess = async () => {
-    console.log('[MobileAccess] Enabling mobile access...');
     setState(prev => ({ ...prev, isLoading: true }));
     try {
       // @ts-ignore - API exposed via preload
-      const result = await window.api?.enableMobileAccess?.();
-      console.log('[MobileAccess] Result:', result);
+      // Pass custom relay URL from settings if configured
+      const result = await window.api?.enableMobileAccess?.({
+        customRelayUrl: customRelayUrl || undefined
+      });
 
-      if (result?.success && result.accessConfig) {
-        console.log('[MobileAccess] Successfully enabled, QR:', !!result.accessConfig.qrCode);
+      if (result?.success) {
         setState(prev => ({
           ...prev,
           isEnabled: true,
-          accessConfig: result.accessConfig,
+          pairing: result.pairing || null,
           isLoading: false
         }));
       } else {
-        console.error('[MobileAccess] Enable failed:', result?.error || 'Unknown error');
+        console.error('[MobileAccess] Enable failed:', result?.error);
         setState(prev => ({ ...prev, isLoading: false }));
       }
     } catch (error) {
-      console.error('[MobileAccess] Failed to enable mobile access:', error);
+      console.error('[MobileAccess] Failed to enable:', error);
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
@@ -1126,63 +477,82 @@ export const MobileAccessSettings: React.FC = () => {
       setState(prev => ({
         ...prev,
         isEnabled: false,
-        accessConfig: null,
-        sessions: [],
+        pairing: null,
+        devices: [],
         isLoading: false
       }));
     } catch (error) {
-      console.error('Failed to disable mobile access:', error);
+      console.error('[MobileAccess] Failed to disable:', error);
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
 
-  const handleRemoteToggle = async () => {
-    const newValue = !state.enableRemoteAccess;
-    setState(prev => ({ ...prev, enableRemoteAccess: newValue, isLoading: true }));
-
-    try {
-      // @ts-ignore - API exposed via preload
-      const result = await window.api?.setMobileRemoteAccess?.(newValue);
-      if (result?.accessConfig) {
-        setState(prev => ({
-          ...prev,
-          accessConfig: result.accessConfig,
-          isLoading: false
-        }));
-      }
-    } catch {
-      setState(prev => ({ ...prev, enableRemoteAccess: !newValue, isLoading: false }));
-    }
-  };
-
-  const handleRegenerateToken = async () => {
+  const handleRefreshCode = async () => {
     setState(prev => ({ ...prev, isLoading: true }));
     try {
       // @ts-ignore - API exposed via preload
-      const result = await window.api?.regenerateMobileToken?.();
-      if (result?.accessConfig) {
+      const result = await window.api?.refreshMobilePairingCode?.();
+      if (result?.pairing) {
         setState(prev => ({
           ...prev,
-          accessConfig: result.accessConfig,
-          sessions: [],
+          pairing: result.pairing,
           isLoading: false
         }));
+      } else {
+        setState(prev => ({ ...prev, isLoading: false }));
       }
-    } catch {
+    } catch (error) {
+      console.error('[MobileAccess] Failed to refresh code:', error);
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
 
-  const handleDisconnectDevice = async (sessionId: string) => {
+  const handleRevokeDevice = async (deviceId: string) => {
     try {
       // @ts-ignore - API exposed via preload
-      await window.api?.disconnectMobileSession?.(sessionId);
-      setState(prev => ({
-        ...prev,
-        sessions: prev.sessions.filter(s => s.id !== sessionId)
-      }));
+      const result = await window.api?.revokeMobileDevice?.(deviceId);
+      if (result?.success) {
+        setState(prev => ({
+          ...prev,
+          devices: prev.devices.filter(d => d.id !== deviceId)
+        }));
+      }
     } catch (error) {
-      console.error('Failed to disconnect device:', error);
+      console.error('[MobileAccess] Failed to revoke device:', error);
+    }
+  };
+
+  const handleRevokeAllDevices = async () => {
+    try {
+      // @ts-ignore - API exposed via preload
+      const result = await window.api?.revokeAllMobileDevices?.();
+      if (result?.success) {
+        setState(prev => ({ ...prev, devices: [] }));
+      }
+    } catch (error) {
+      console.error('[MobileAccess] Failed to revoke all devices:', error);
+    }
+  };
+
+  const handleRelayToggle = async (enabled: boolean) => {
+    setRemoteAccessEnabled(enabled);
+    // Notify main process
+    try {
+      // @ts-ignore - API exposed via preload
+      await window.api?.setMobileRemoteAccess?.(enabled);
+    } catch (error) {
+      console.error('[MobileAccess] Failed to toggle remote access:', error);
+    }
+  };
+
+  const handleRelayUrlChange = async (url: string | null) => {
+    setCustomRelayUrl(url);
+    // Notify main process
+    try {
+      // @ts-ignore - API exposed via preload
+      await window.api?.setMobileRelayUrl?.(url);
+    } catch (error) {
+      console.error('[MobileAccess] Failed to set relay URL:', error);
     }
   };
 
@@ -1195,23 +565,11 @@ export const MobileAccessSettings: React.FC = () => {
     );
   }
 
-  const primaryUrl = state.accessConfig?.tunnelUrl || state.accessConfig?.localUrl || '';
-  const isRemote = !!state.accessConfig?.tunnelUrl;
-
   return (
     <div className="mobile-access-settings">
       {/* Privacy Notice Modal */}
       {showPrivacy && (
         <PrivacyNotice onAccept={handlePrivacyAccept} onDecline={handlePrivacyDecline} />
-      )}
-
-      {/* Device Approval Dialog */}
-      {state.pendingApproval && (
-        <DeviceApprovalDialog
-          request={state.pendingApproval}
-          onApprove={handleApproveDevice}
-          onDeny={handleDenyDevice}
-        />
       )}
 
       {/* Header */}
@@ -1235,113 +593,46 @@ export const MobileAccessSettings: React.FC = () => {
       </div>
 
       {/* Content - only show when enabled */}
-      {state.isEnabled && state.accessConfig && (
+      {state.isEnabled && (
         <div className="mobile-access-content">
-          {/* Relay Code Section - Primary connection method */}
-          {state.accessConfig.relayCode && (
-            <RelayCodeDisplay
-              code={state.accessConfig.relayCode}
-              isActive={state.accessConfig.relayActive || false}
-            />
-          )}
-
-          {/* QR Codes Section */}
-          <div className="mobile-qr-section">
-            {/* Show tabs when both QR codes are available */}
-            {state.accessConfig.remoteQrCode && state.accessConfig.qrCode ? (
-              <QRCodeTabs
-                localQrCode={state.accessConfig.qrCode}
-                remoteQrCode={state.accessConfig.remoteQrCode}
-                localUrl={state.accessConfig.localUrl}
-                relayCode={state.accessConfig.relayCode || ''}
+          {state.pairing ? (
+            <>
+              {/* Pairing Code Section */}
+              <PairingCodeDisplay
+                code={state.pairing.code}
+                qrCode={state.pairing.qrCode}
+                isActive={state.pairing.relayActive}
+                onRefresh={handleRefreshCode}
+                isLoading={state.isLoading}
               />
-            ) : (
-              <QRCodeDisplay
-                qrCode={state.accessConfig.qrCode || ''}
-                url={primaryUrl}
-                isRemote={isRemote}
-                tunnelPassword={state.accessConfig.tunnelPassword}
-              />
-            )}
-          </div>
 
-          {/* Remote Access Option - Only show if relay not active */}
-          {!state.accessConfig.relayActive && (
-          <div className="mobile-access-option">
-            <div className="mobile-access-option-info">
-              <div className="mobile-access-option-row">
-                <GlobeIcon size={18} />
-                <h4>Access from Anywhere</h4>
+              {/* Relay Settings */}
+              <RelaySettings
+                enabled={remoteAccessEnabled}
+                customUrl={customRelayUrl}
+                onToggle={handleRelayToggle}
+                onUrlChange={handleRelayUrlChange}
+              />
+
+              {/* Paired Devices */}
+              <div className="mobile-access-section">
+                <div className="mobile-access-section-header">
+                  <h4>Paired Devices</h4>
+                  <span className="mobile-access-count">{state.devices.length}</span>
+                </div>
+                <PairedDevices
+                  devices={state.devices}
+                  onRevoke={handleRevokeDevice}
+                  onRevokeAll={handleRevokeAllDevices}
+                />
               </div>
-              <p>
-                Enable to access your music outside your home network.
-                Uses a secure tunnel connection.
-              </p>
-            </div>
-            <label className="mobile-access-toggle small">
-              <input
-                type="checkbox"
-                checked={state.enableRemoteAccess}
-                onChange={handleRemoteToggle}
-                disabled={state.isLoading}
-              />
-              <span className="mobile-access-toggle-slider" />
-            </label>
-          </div>
-          )}
-
-          {/* Passphrase Section */}
-          {state.showCustomPasswordForm ? (
-            <CustomPasswordForm
-              password={state.customPassword}
-              error={state.customPasswordError}
-              onPasswordChange={(password) => setState(prev => ({ ...prev, customPassword: password }))}
-              onSubmit={handleSetCustomPassword}
-              onCancel={() => setState(prev => ({ ...prev, showCustomPasswordForm: false, customPassword: '', customPasswordError: null }))}
-              isLoading={state.isLoading}
-            />
+            </>
           ) : (
-            <PassphraseDisplay
-              passphrase={state.passphrase}
-              useCustomPassword={state.authSettings.useCustomPassword}
-              onRegenerate={handleRegeneratePassphrase}
-              onShowCustomPasswordForm={() => setState(prev => ({ ...prev, showCustomPasswordForm: true }))}
-              onRemoveCustomPassword={handleRemoveCustomPassword}
-              isLoading={state.isLoading}
-            />
+            <div className="mobile-access-connecting">
+              <div className="mobile-access-spinner" />
+              <p>Connecting to relay server...</p>
+            </div>
           )}
-
-          {/* Authorized Devices */}
-          <div className="mobile-access-section">
-            <div className="mobile-access-section-header">
-              <h4>Remembered Devices</h4>
-              <span className="mobile-access-count">{state.authorizedDevices.length}</span>
-            </div>
-            <AuthorizedDevices
-              devices={state.authorizedDevices}
-              onRevoke={handleRevokeDevice}
-              onRevokeAll={handleRevokeAllDevices}
-              onRename={handleRenameDevice}
-            />
-          </div>
-
-          {/* Active Sessions */}
-          <div className="mobile-access-section">
-            <div className="mobile-access-section-header">
-              <h4>Active Sessions</h4>
-              <span className="mobile-access-count">{state.sessions.length}</span>
-            </div>
-            <ConnectedDevices
-              sessions={state.sessions}
-              onDisconnect={handleDisconnectDevice}
-            />
-          </div>
-
-          {/* Security Settings */}
-          <SecuritySettings
-            settings={state.authSettings}
-            onUpdateSettings={handleUpdateAuthSettings}
-          />
         </div>
       )}
 
@@ -1349,8 +640,8 @@ export const MobileAccessSettings: React.FC = () => {
       {!state.isEnabled && (
         <div className="mobile-access-disabled-hint">
           <p>
-            Turn on to create a personal streaming portal.
-            Scan the QR code with your phone to listen anywhere.
+            Turn on to access your music library from your phone.
+            Enter a code or scan a QR to connect.
           </p>
         </div>
       )}
@@ -1389,12 +680,6 @@ const ControlIcon: React.FC<{ size: number }> = ({ size }) => (
 const InfoIcon: React.FC<{ size: number }> = ({ size }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
-  </svg>
-);
-
-const QRIcon: React.FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zM13 13h2v2h-2zM15 15h2v2h-2zM13 17h2v2h-2zM17 13h2v2h-2zM19 15h2v2h-2zM17 17h2v2h-2zM15 19h2v2h-2zM19 19h2v2h-2z"/>
   </svg>
 );
 
@@ -1440,33 +725,9 @@ const RefreshIcon: React.FC<{ size: number }> = ({ size }) => (
   </svg>
 );
 
-const KeyIcon: React.FC<{ size: number }> = ({ size }) => (
+const SettingsIcon: React.FC<{ size: number }> = ({ size }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
-  </svg>
-);
-
-const EyeIcon: React.FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
-  </svg>
-);
-
-const EyeOffIcon: React.FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/>
-  </svg>
-);
-
-const LinkIcon: React.FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/>
-  </svg>
-);
-
-const WifiIcon: React.FC<{ size: number }> = ({ size }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/>
+    <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
   </svg>
 );
 

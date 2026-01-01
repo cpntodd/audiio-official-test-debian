@@ -107,8 +107,10 @@ export const SeasonalSection: React.FC<SeasonalSectionProps> = ({
     play(track);
   };
 
-  // Show empty state instead of hiding
-  const showEmptyState = !isLoading && tracks.length === 0;
+  // Hide section when no data available
+  if (!isLoading && tracks.length === 0) {
+    return null;
+  }
 
   return (
     <BaseSectionWrapper
@@ -129,10 +131,6 @@ export const SeasonalSection: React.FC<SeasonalSectionProps> = ({
           {[1, 2, 3, 4, 5].map(i => (
             <div key={i} className="discover-card-skeleton" />
           ))}
-        </div>
-      ) : showEmptyState ? (
-        <div className="discover-empty-state">
-          <p>Loading seasonal music...</p>
         </div>
       ) : (
         <div className="discover-horizontal-scroll">

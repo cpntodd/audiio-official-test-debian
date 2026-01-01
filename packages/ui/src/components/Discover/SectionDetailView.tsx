@@ -13,12 +13,21 @@ import { useTrackContextMenu } from '../../contexts/ContextMenuContext';
 import { BackIcon } from '@audiio/icons';
 import { TrackCard } from './TrackCard';
 import { EmbeddingSectionDetailView } from './EmbeddingSectionDetailView';
+import { ArtistSectionDetailView } from './ArtistSectionDetailView';
+
+// Section types that display artists instead of tracks
+const ARTIST_SECTION_TYPES = ['trending-artists', 'similar-artists'];
 
 /**
  * Main router component - decides which detail view to render
  */
 export const SectionDetailView: React.FC = () => {
   const { selectedSectionData } = useNavigationStore();
+
+  // Route to ArtistSectionDetailView for artist-based sections
+  if (selectedSectionData?.type && ARTIST_SECTION_TYPES.includes(selectedSectionData.type)) {
+    return <ArtistSectionDetailView />;
+  }
 
   // Route to EmbeddingSectionDetailView for structured queries
   if (selectedSectionData?.structuredQuery) {

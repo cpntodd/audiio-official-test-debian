@@ -1,6 +1,7 @@
 import React from 'react';
 import type { UnifiedTrack } from '@audiio/core';
 import { MusicNoteIcon } from '@audiio/icons';
+import { useArtwork } from '../../hooks/useArtwork';
 
 interface TrackRowProps {
   track: UnifiedTrack;
@@ -26,7 +27,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
   };
 
   const artistNames = track.artists?.map(a => a.name).join(', ') ?? 'Unknown Artist';
-  const artworkUrl = track.artwork?.medium ?? track.album?.artwork?.medium;
+  const { artworkUrl, isLoading: artworkLoading } = useArtwork(track);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     if (onContextMenu) {
@@ -44,7 +45,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
 
       {artworkUrl ? (
         <img
-          className="track-artwork"
+          className={`track-artwork ${artworkLoading ? 'loading' : ''}`}
           src={artworkUrl}
           alt={track.title}
           loading="lazy"
@@ -61,7 +62,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
       </div>
 
       <span className="track-duration">
-        {formatDuration(track.duration)}
+        {track.duration > 0 ? formatDuration(track.duration) : '--:--'}
       </span>
     </div>
   );

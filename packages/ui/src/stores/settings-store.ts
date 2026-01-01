@@ -51,6 +51,10 @@ interface SettingsState {
   demucsEnabled: boolean;
   demucsVersion: string | null;
 
+  // Mobile/Remote access settings
+  customRelayUrl: string | null;
+  remoteAccessEnabled: boolean;
+
   // Actions
   setDownloadFolder: (path: string | null) => void;
   setPluginFolder: (path: string | null) => void;
@@ -66,6 +70,8 @@ interface SettingsState {
   setDemucsInstalled: (installed: boolean) => void;
   setDemucsEnabled: (enabled: boolean) => void;
   setDemucsVersion: (version: string | null) => void;
+  setCustomRelayUrl: (url: string | null) => void;
+  setRemoteAccessEnabled: (enabled: boolean) => void;
 }
 
 // Generate unique ID for folders
@@ -108,6 +114,10 @@ export const useSettingsStore = create<SettingsState>()(
       demucsInstalled: false,
       demucsEnabled: true, // Enabled by default when installed
       demucsVersion: null,
+
+      // Mobile/Remote access
+      customRelayUrl: null,
+      remoteAccessEnabled: true,
 
       // Actions
       setDownloadFolder: (path) => {
@@ -190,6 +200,16 @@ export const useSettingsStore = create<SettingsState>()(
         set({ demucsVersion: version });
         syncWithMainProcess('demucsVersion', version);
       },
+
+      setCustomRelayUrl: (url) => {
+        set({ customRelayUrl: url });
+        syncWithMainProcess('customRelayUrl', url);
+      },
+
+      setRemoteAccessEnabled: (enabled) => {
+        set({ remoteAccessEnabled: enabled });
+        syncWithMainProcess('remoteAccessEnabled', enabled);
+      },
     }),
     {
       name: 'audiio-settings',
@@ -209,6 +229,8 @@ export const useSettingsStore = create<SettingsState>()(
         demucsInstalled: state.demucsInstalled,
         demucsEnabled: state.demucsEnabled,
         demucsVersion: state.demucsVersion,
+        customRelayUrl: state.customRelayUrl,
+        remoteAccessEnabled: state.remoteAccessEnabled,
       }),
     }
   )
