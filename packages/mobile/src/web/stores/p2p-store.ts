@@ -189,14 +189,16 @@ export const useP2PStore = create<P2PState>((set, get) => ({
         ws.onopen = () => {
           console.log('[P2P] Connected to relay server');
 
-          // Send join request
+          // Send join request with roomId (new static room model)
           const joinMessage = {
             type: 'join',
             payload: {
-              code: normalizedCode,
+              roomId: normalizedCode, // Room ID is the static code
+              code: normalizedCode,   // Keep for backwards compatibility
               publicKey: get().keyPair.publicKey,
               deviceName: deviceName || getDeviceName(),
               userAgent: navigator.userAgent
+              // passwordHash would be added here if we implement password UI
             },
             timestamp: Date.now()
           };
@@ -376,14 +378,23 @@ function handleRelayMessage(
 
   switch (message.type) {
     case 'joined': {
-      // Successfully joined - got desktop's public key
-      const payload = message.payload as { desktopPublicKey: string };
-      console.log('[P2P] Connected to desktop!');
+      // Successfully joined - got desktop's public key and server info
+      const payload = message.payload as { desktopPublicKey: string; serverName?: string };
+      console.log(`[P2P] Connected to desktop${payload.serverName ? ` (${payload.serverName})` : ''}!`);
       set({
         status: 'connected',
         desktopPublicKey: payload.desktopPublicKey
       });
       onConnected();
+      break;
+    }
+
+    case 'auth-required': {
+      // Room requires password
+      const payload = message.payload as { roomId: string; serverName?: string };
+      console.log(`[P2P] Password required for room: ${payload.roomId}`);
+      // For now, show error. Later we can add password UI.
+      onError(`Password required to connect to ${payload.serverName || 'this server'}`);
       break;
     }
 

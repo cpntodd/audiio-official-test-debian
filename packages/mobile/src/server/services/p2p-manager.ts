@@ -4,14 +4,15 @@
  * Uses the Audiio Relay server for signaling.
  * Works in both Node.js (desktop) and browsers (mobile).
  *
- * Flow:
- * 1. Desktop registers with relay, gets a connection code (e.g., "BLUE-TIGER-42")
- * 2. Mobile joins the same room with the code
- * 3. Messages are E2E encrypted and relayed
+ * Static Room Model:
+ * 1. Desktop has a permanent room ID (stored locally)
+ * 2. Optional password for security (hashed, never sent in plaintext)
+ * 3. Mobile joins room by ID, stays connected
+ * 4. Messages are E2E encrypted and relayed
  */
 
 import { EventEmitter } from 'events';
-import { RelayClient, ConnectedPeer, RelayClientConfig } from '@audiio/relay';
+import { RelayClient, ConnectedPeer, RoomId } from '@audiio/relay';
 
 // Re-export types with P2P naming for backwards compatibility
 export interface P2PPeer {
@@ -21,10 +22,14 @@ export interface P2PPeer {
   connectedAt: number;
 }
 
-export interface P2PConfig extends Partial<RelayClientConfig> {
+export interface P2PConfig {
   relayUrl?: string;
-  /** Persistent room code to request (for server identity) */
-  persistentCode?: string;
+  /** Static room ID (can be set at construction or when calling startAsHost) */
+  roomId?: RoomId;
+  /** Optional password hash for room protection */
+  passwordHash?: string;
+  /** Server name for display (e.g., "Jordan's MacBook Pro") */
+  serverName?: string;
 }
 
 // Relay server URL - will be updated after Fly.io deployment
@@ -44,35 +49,43 @@ export class P2PManager extends EventEmitter {
   }
 
   /**
-   * Start as host (desktop) - get a connection code
-   * @param persistentCode Optional persistent code to request (for server identity)
+   * Start as host (desktop) - register with the static room ID
+   * @param roomId Room ID to use (overrides config if provided)
+   * @param serverName Server name for display (overrides config if provided)
    */
-  async startAsHost(persistentCode?: string): Promise<{ code: string }> {
+  async startAsHost(roomId?: string, serverName?: string): Promise<{ code: string }> {
     if (this.isRunning) {
       throw new Error('P2P already running');
     }
 
+    // Use provided roomId or fall back to config
+    const effectiveRoomId = roomId || this.config.roomId;
+    if (!effectiveRoomId) {
+      throw new Error('roomId is required for P2P connection');
+    }
+
+    // Update config with provided values
+    if (roomId) this.config.roomId = roomId;
+    if (serverName) this.config.serverName = serverName;
+
     const serverUrl = this.config.relayUrl || DEFAULT_RELAY_URL;
 
     console.log(`[P2P] Connecting to relay: ${serverUrl}`);
+    console.log(`[P2P] Room ID: ${effectiveRoomId}${this.config.passwordHash ? ' (password protected)' : ''}`);
 
     this.relay = new RelayClient({
       serverUrl,
+      roomId: effectiveRoomId,
+      passwordHash: this.config.passwordHash,
+      serverName: this.config.serverName,
       autoReconnect: true,
       reconnectDelay: 3000,
       maxReconnectAttempts: 10
     });
 
-    // Request persistent code if provided (for Plex-like reconnection)
-    const codeToRequest = persistentCode || this.config.persistentCode;
-    if (codeToRequest) {
-      this.relay.setRequestedCode(codeToRequest);
-      console.log(`[P2P] Requesting persistent code: ${codeToRequest}`);
-    }
-
     // Set up event handlers
-    this.relay.on('registered', (code, expiresAt) => {
-      console.log(`[P2P] Registered with code: ${code} (expires: ${new Date(expiresAt).toLocaleTimeString()})`);
+    this.relay.on('registered', (registeredRoomId, hasPassword) => {
+      console.log(`[P2P] Registered room: ${registeredRoomId}${hasPassword ? ' (password protected)' : ''}`);
     });
 
     this.relay.on('peerJoined', (peer: ConnectedPeer) => {
@@ -125,20 +138,20 @@ export class P2PManager extends EventEmitter {
   }
 
   /**
-   * Wait for connection code from relay (waits for actual registration, not just requested code)
+   * Wait for room registration confirmation from relay
    */
   private waitForCode(): Promise<string> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Timeout waiting for connection code'));
+        reject(new Error('Timeout waiting for room registration'));
       }, 10000);
 
-      // Listen for the 'registered' event which gives us the ACTUAL assigned code
-      const unsubscribe = this.relay?.on('registered', (code) => {
+      // Listen for the 'registered' event which confirms room is active
+      const unsubscribe = this.relay?.on('registered', (roomId) => {
         clearTimeout(timeout);
         unsubscribe?.();
-        console.log(`[P2P] Got assigned code from relay: ${code}`);
-        resolve(code);
+        console.log(`[P2P] Room registered: ${roomId}`);
+        resolve(roomId);
       });
 
       // If no relay, reject immediately
@@ -178,10 +191,35 @@ export class P2PManager extends EventEmitter {
   }
 
   /**
-   * Get connection code
+   * Get room ID
+   */
+  getRoomId(): string | null {
+    return this.config.roomId || null;
+  }
+
+  /**
+   * Get connection code (alias for getRoomId for backwards compatibility)
    */
   getConnectionCode(): string | null {
-    return this.relay?.getConnectionCode() || null;
+    return this.relay?.getRoomId() || this.config.roomId || null;
+  }
+
+  /**
+   * Check if room has password protection
+   */
+  hasPassword(): boolean {
+    return !!this.config.passwordHash;
+  }
+
+  /**
+   * Update password hash (takes effect on next connection)
+   */
+  setPasswordHash(hash: string | undefined): void {
+    this.config.passwordHash = hash;
+    // If connected, update the relay client
+    if (this.relay) {
+      this.relay.setPasswordHash(hash);
+    }
   }
 
   /**

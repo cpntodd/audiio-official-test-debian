@@ -27,6 +27,7 @@ export {
   decryptJSON,
   computeSharedSecret,
   hash,
+  hashPassword,
   fingerprint,
   isValidPublicKey,
   type KeyPair,

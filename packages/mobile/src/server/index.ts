@@ -480,26 +480,29 @@ export class MobileServer {
     console.log(`[Mobile] Pairing code: ${pairingCode.code}`);
 
     // Start P2P for remote access (serverless - no backend needed!)
-    // Use persistent server identity code for Plex-like "pair once, connect forever"
+    // Use persistent server identity for static room model
     console.log('[P2P] Starting P2P for remote access...');
     try {
-      // Get persistent relay code from server identity
+      // Get persistent room ID from server identity
       const serverIdentity = this.pairingService.getServerIdentity();
-      const persistentCode = serverIdentity?.getRelayCode();
+      const roomId = serverIdentity?.getRelayCode();
+      const serverName = serverIdentity?.getServerName() || 'Audiio Desktop';
 
       console.log(`[P2P] Server identity exists: ${!!serverIdentity}`);
-      console.log(`[P2P] Persistent relay code: ${persistentCode || 'none'}`);
+      console.log(`[P2P] Room ID: ${roomId || 'none'}`);
+      console.log(`[P2P] Server name: ${serverName}`);
 
-      this.p2pInfo = await this.p2pManager.startAsHost(persistentCode || undefined);
-      console.log(`[P2P] Connection code: ${this.p2pInfo.code}`);
-      console.log('[P2P] Remote access ready - works from anywhere!');
-
-      // Sync relay code to PairingService so it accepts both codes
-      this.pairingService.setRelayCode(this.p2pInfo.code);
-
-      if (persistentCode) {
-        console.log(`[P2P] Using persistent code for reconnection: ${persistentCode}`);
+      if (!roomId) {
+        throw new Error('No room ID available - server identity not initialized');
       }
+
+      // Start with static room ID and server name
+      this.p2pInfo = await this.p2pManager.startAsHost(roomId, serverName);
+      console.log(`[P2P] Room registered: ${this.p2pInfo.code}`);
+      console.log('[P2P] Remote access ready - static room ID never changes!');
+
+      // Sync relay code to PairingService so it accepts this code
+      this.pairingService.setRelayCode(this.p2pInfo.code);
     } catch (error) {
       console.error('[P2P] Failed to start P2P:', error);
       this.p2pInfo = null;
