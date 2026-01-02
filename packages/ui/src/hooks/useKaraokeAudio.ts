@@ -51,7 +51,8 @@ export function useKaraokeAudio({
     let nodes = connectedElements.get(originalAudio);
     if (!nodes) {
       try {
-        const context = new AudioContext();
+        // Use 'playback' latency hint for smoother audio (prevents static/pops on macOS)
+        const context = new AudioContext({ latencyHint: 'playback' });
         const source = context.createMediaElementSource(originalAudio);
         const originalGain = context.createGain();
 

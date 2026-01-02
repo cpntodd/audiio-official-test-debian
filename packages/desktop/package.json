@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@audiio/core": "*",
-    "@audiio/sdk": "*",
     "@audiio/mobile": "*",
+    "@audiio/sdk": "*",
     "music-metadata": "^10.6.4",
-    "node-id3": "^0.2.6",
+    "node-id3": "^0.2.9",
     "socket.io-client": "^4.7.0"
   },
   "optionalDependencies": {
