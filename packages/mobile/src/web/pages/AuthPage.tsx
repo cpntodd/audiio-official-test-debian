@@ -44,11 +44,27 @@ export function AuthPage() {
     setDeviceName(getDefaultDeviceName());
   }, []);
 
-  // Check for code in URL (from QR scan)
+  // Check for code in URL (from QR scan or direct link)
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const pairingCode = urlParams.get('pair');
 
+    // Check for room ID (new static room model) - primary format
+    const roomId = urlParams.get('room');
+    if (roomId) {
+      console.log('[Auth] Found room ID in URL:', roomId);
+      setCode(roomId);
+      setIsAutoConnecting(true);
+      handleP2PConnect(roomId);
+
+      // Clean up URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete('room');
+      window.history.replaceState({}, '', url.toString());
+      return;
+    }
+
+    // Check for legacy pairing code
+    const pairingCode = urlParams.get('pair');
     if (pairingCode) {
       // Auto-pair with code from QR
       setCode(pairingCode);
@@ -59,9 +75,10 @@ export function AuthPage() {
       const url = new URL(window.location.href);
       url.searchParams.delete('pair');
       window.history.replaceState({}, '', url.toString());
+      return;
     }
 
-    // Also check for code in hash (for P2P)
+    // Also check for code in hash (for P2P) - legacy format
     const hash = window.location.hash;
     if (hash.startsWith('#p2p=')) {
       const codeFromHash = hash.substring(5);

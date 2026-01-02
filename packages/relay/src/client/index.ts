@@ -12,7 +12,7 @@ import {
   PeerJoinedMessage,
   PeerLeftMessage,
   DataMessage,
-  ConnectionCode
+  RoomId
 } from '../shared/types';
 import {
   generateKeyPair,
@@ -26,6 +26,12 @@ import {
 export interface RelayClientConfig {
   /** Relay server URL (ws:// or wss://) */
   serverUrl: string;
+  /** Static room ID (SWIFT-EAGLE-42 format) */
+  roomId: RoomId;
+  /** Optional password hash for room protection */
+  passwordHash?: string;
+  /** Server name for display (e.g., "Jordan's MacBook Pro") */
+  serverName?: string;
   /** Reconnect on disconnect */
   autoReconnect: boolean;
   /** Reconnect delay in ms */
@@ -47,8 +53,8 @@ export interface RelayClientEvents {
   connected: () => void;
   /** Disconnected from relay server */
   disconnected: (reason?: string) => void;
-  /** Got a connection code */
-  registered: (code: ConnectionCode, expiresAt: number) => void;
+  /** Room registered/connected */
+  registered: (roomId: RoomId, hasPassword: boolean) => void;
   /** A mobile device wants to connect */
   peerJoined: (peer: ConnectedPeer) => void;
   /** A mobile device disconnected */
@@ -59,7 +65,7 @@ export interface RelayClientEvents {
   error: (error: Error) => void;
 }
 
-const DEFAULT_CONFIG: RelayClientConfig = {
+const DEFAULT_CONFIG: Partial<RelayClientConfig> = {
   serverUrl: 'ws://localhost:9484',
   autoReconnect: true,
   reconnectDelay: 3000,
@@ -70,7 +76,6 @@ export class RelayClient {
   private config: RelayClientConfig;
   private ws: WebSocket | null = null;
   private keyPair: KeyPair;
-  private connectionCode: ConnectionCode | null = null;
   private peers = new Map<string, ConnectedPeer>();
   private listeners = new Map<keyof RelayClientEvents, Set<Function>>();
   private reconnectAttempts = 0;
@@ -78,8 +83,11 @@ export class RelayClient {
   private shouldReconnect = true;
   private pingInterval: NodeJS.Timeout | null = null;
 
-  constructor(config: Partial<RelayClientConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  constructor(config: Partial<RelayClientConfig> & { roomId: RoomId }) {
+    if (!config.roomId) {
+      throw new Error('roomId is required');
+    }
+    this.config = { ...DEFAULT_CONFIG, ...config } as RelayClientConfig;
     this.keyPair = generateKeyPair();
   }
 
@@ -152,7 +160,6 @@ export class RelayClient {
       this.ws = null;
     }
 
-    this.connectionCode = null;
     this.peers.clear();
   }
 
@@ -189,19 +196,28 @@ export class RelayClient {
   }
 
   /**
-   * Get current connection code
+   * Get room ID
    */
-  getConnectionCode(): ConnectionCode | null {
-    return this.connectionCode;
+  getRoomId(): RoomId {
+    return this.config.roomId;
   }
 
   /**
-   * Set requested connection code (for persistent server identity)
-   * Must be called before connect() to request a specific code
+   * Check if room has password protection
    */
-  setRequestedCode(code: ConnectionCode): void {
-    this.connectionCode = code;
-    console.log(`[RelayClient] Will request code: ${code}`);
+  hasPassword(): boolean {
+    return !!this.config.passwordHash;
+  }
+
+  /**
+   * Update password (for runtime changes)
+   */
+  setPasswordHash(hash: string | undefined): void {
+    this.config.passwordHash = hash;
+    // If connected, re-register to update password on relay
+    if (this.isConnected()) {
+      this.register();
+    }
   }
 
   /**
@@ -252,7 +268,9 @@ export class RelayClient {
       type: 'register',
       payload: {
         publicKey: this.keyPair.publicKey,
-        requestedCode: this.connectionCode || undefined
+        roomId: this.config.roomId,
+        passwordHash: this.config.passwordHash,
+        serverName: this.config.serverName
       },
       timestamp: Date.now()
     });
@@ -288,9 +306,9 @@ export class RelayClient {
   }
 
   private handleRegistered(message: RegisteredMessage): void {
-    this.connectionCode = message.payload.code;
-    console.log(`[RelayClient] Registered with code: ${this.connectionCode}`);
-    this.emit('registered', this.connectionCode, message.payload.expiresAt);
+    const { roomId, hasPassword } = message.payload;
+    console.log(`[RelayClient] Registered room: ${roomId}${hasPassword ? ' (password protected)' : ''}`);
+    this.emit('registered', roomId, hasPassword);
   }
 
   private handlePeerJoined(message: PeerJoinedMessage): void {
@@ -396,6 +414,6 @@ export class RelayClient {
 }
 
 // Re-export useful types and functions
-export { generateKeyPair, encrypt, decrypt, decryptJSON } from '../shared/crypto';
+export { generateKeyPair, encrypt, decrypt, decryptJSON, hashPassword } from '../shared/crypto';
 export { generateCode, normalizeCode } from '../shared/codes';
 export * from '../shared/types';

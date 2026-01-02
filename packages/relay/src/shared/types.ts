@@ -1,17 +1,27 @@
 /**
  * Shared types for Audiio Relay
+ *
+ * Static Room Model:
+ * - Each computer gets a permanent room ID (like SWIFT-EAGLE-42)
+ * - Room ID never changes unless user resets it
+ * - Optional password for additional security (E2E encrypted)
+ * - Relay only routes messages, stores nothing sensitive
  */
 
-// Connection codes are memorable words + number
+// Room ID - permanent identifier for a computer/server
 // e.g., "BLUE-TIGER-42", "SWIFT-RIVER-17"
-export type ConnectionCode = string;
+export type RoomId = string;
+
+// Legacy alias for compatibility
+export type ConnectionCode = RoomId;
 
 // Message types for relay protocol
 export type RelayMessageType =
-  | 'register'        // Desktop registers with relay
-  | 'registered'      // Relay confirms registration with code
-  | 'join'            // Mobile joins with code
+  | 'register'        // Desktop registers with relay (creates/joins room)
+  | 'registered'      // Relay confirms registration
+  | 'join'            // Mobile joins room
   | 'joined'          // Relay confirms mobile joined
+  | 'auth-required'   // Room requires password
   | 'peer-joined'     // Notify desktop that mobile connected
   | 'peer-left'       // Notify when peer disconnects
   | 'data'            // E2E encrypted data packet
@@ -31,8 +41,13 @@ export interface RegisterMessage extends RelayMessage {
   payload: {
     // Desktop's public key for E2E encryption
     publicKey: string;
-    // Optional: request specific code (for reconnection)
-    requestedCode?: string;
+    // Persistent room ID (SWIFT-EAGLE-42 format)
+    roomId: RoomId;
+    // Optional: password hash for room authentication
+    // SHA-256 hash of user's password - relay only compares hashes
+    passwordHash?: string;
+    // Server name for display (e.g., "Jordan's MacBook Pro")
+    serverName?: string;
   };
 }
 
@@ -40,21 +55,33 @@ export interface RegisterMessage extends RelayMessage {
 export interface RegisteredMessage extends RelayMessage {
   type: 'registered';
   payload: {
-    code: ConnectionCode;
-    expiresAt: number; // Code expiry timestamp
+    roomId: RoomId;
+    // Whether room has password protection enabled
+    hasPassword: boolean;
   };
 }
 
-// Mobile joining with code
+// Mobile joining with room ID
 export interface JoinMessage extends RelayMessage {
   type: 'join';
   payload: {
-    code: ConnectionCode;
+    roomId: RoomId;
     // Mobile's public key for E2E encryption
     publicKey: string;
     // Device info
     deviceName: string;
     userAgent: string;
+    // Password hash if room requires authentication
+    passwordHash?: string;
+  };
+}
+
+// Room requires password
+export interface AuthRequiredMessage extends RelayMessage {
+  type: 'auth-required';
+  payload: {
+    roomId: RoomId;
+    serverName?: string;
   };
 }
 
@@ -64,6 +91,8 @@ export interface JoinedMessage extends RelayMessage {
   payload: {
     // Desktop's public key for mobile to encrypt messages
     desktopPublicKey: string;
+    // Server info
+    serverName?: string;
   };
 }
 
@@ -110,12 +139,19 @@ export interface ErrorMessage extends RelayMessage {
 
 // Room state on the relay server
 export interface RelayRoom {
-  code: ConnectionCode;
-  desktopId: string;
+  roomId: RoomId;
+  desktopId: string | null;  // null when desktop is offline
   desktopPublicKey: string;
+  // Password hash for authentication (relay compares, never decrypts)
+  passwordHash?: string;
+  // Human-readable server name
+  serverName?: string;
   peers: Map<string, RelayPeer>;
   createdAt: number;
-  expiresAt: number;
+  // When desktop last connected (for cleanup)
+  lastDesktopSeen: number;
+  // Static rooms don't expire while desktop is connected
+  isDesktopOnline: boolean;
 }
 
 export interface RelayPeer {
@@ -130,8 +166,8 @@ export interface RelayPeer {
 export interface RelayServerConfig {
   port: number;
   host: string;
-  // How long codes are valid (default 5 minutes)
-  codeExpiryMs: number;
+  // How long to keep inactive rooms (desktop offline) - default 24 hours
+  roomCleanupMs: number;
   // Max peers per room
   maxPeersPerRoom: number;
   // Enable TLS
@@ -144,6 +180,6 @@ export interface RelayServerConfig {
 export const DEFAULT_RELAY_CONFIG: RelayServerConfig = {
   port: 9484,
   host: '0.0.0.0',
-  codeExpiryMs: 5 * 60 * 1000, // 5 minutes
+  roomCleanupMs: 24 * 60 * 60 * 1000, // 24 hours - rooms persist while desktop offline
   maxPeersPerRoom: 5
 };

@@ -147,3 +147,11 @@ export function isValidPublicKey(publicKey: string): boolean {
     return false;
   }
 }
+
+/**
+ * Hash a password for room authentication
+ * Uses SHA-512 for secure hashing - relay only compares hashes, never plaintext
+ */
+export function hashPassword(password: string): string {
+  return hash(password);
+}

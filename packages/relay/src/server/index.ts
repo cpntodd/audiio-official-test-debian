@@ -24,9 +24,10 @@ import {
   RelayPeer,
   RegisterMessage,
   JoinMessage,
-  DataMessage
+  DataMessage,
+  RoomId
 } from '../shared/types';
-import { generateCode, normalizeCode } from '../shared/codes';
+import { normalizeCode } from '../shared/codes';
 
 interface ConnectedClient {
   ws: WebSocket;
@@ -183,95 +184,153 @@ export class RelayServer {
   }
 
   /**
-   * Handle desktop registration
+   * Handle desktop registration with static room ID
    */
   private handleRegister(ws: WebSocket, client: ConnectedClient, message: RegisterMessage): void {
-    const { publicKey, requestedCode } = message.payload;
+    const { publicKey, roomId, passwordHash, serverName } = message.payload;
 
-    // Check if requesting a specific code (for persistent server identity)
-    let code: string;
-    if (requestedCode) {
-      const normalizedRequestedCode = normalizeCode(requestedCode);
+    if (!roomId) {
+      this.sendError(ws, 'MISSING_ROOM_ID', 'Room ID is required');
+      return;
+    }
 
-      if (this.rooms.has(normalizedRequestedCode)) {
-        // Room exists - update desktop connection (reconnection)
-        const existingRoom = this.rooms.get(normalizedRequestedCode)!;
-        code = normalizedRequestedCode;
-        // Update the desktop connection
-        existingRoom.desktopId = client.id;
-        existingRoom.desktopPublicKey = publicKey;
-        existingRoom.expiresAt = Date.now() + this.config.codeExpiryMs;
-        console.log(`[Relay] Desktop reconnected to existing room: ${code}`);
-      } else {
-        // Room doesn't exist - create with requested code (Plex-like persistent code)
-        code = normalizedRequestedCode;
+    const normalizedRoomId = normalizeCode(roomId);
 
-        const room: RelayRoom = {
-          code,
-          desktopId: client.id,
-          desktopPublicKey: publicKey,
-          peers: new Map(),
-          createdAt: Date.now(),
-          expiresAt: Date.now() + this.config.codeExpiryMs
-        };
+    if (this.rooms.has(normalizedRoomId)) {
+      // Room exists - update desktop connection (reconnection)
+      const existingRoom = this.rooms.get(normalizedRoomId)!;
 
-        this.rooms.set(code, room);
-        console.log(`[Relay] Desktop registered with persistent code: ${code}`);
+      // Update the desktop connection
+      existingRoom.desktopId = client.id;
+      existingRoom.desktopPublicKey = publicKey;
+      existingRoom.isDesktopOnline = true;
+      existingRoom.lastDesktopSeen = Date.now();
+
+      // Update password if provided (allows changing password)
+      if (passwordHash !== undefined) {
+        existingRoom.passwordHash = passwordHash || undefined;
+      }
+      if (serverName) {
+        existingRoom.serverName = serverName;
+      }
+
+      console.log(`[Relay] Desktop reconnected to room: ${normalizedRoomId}`);
+
+      // Notify any waiting peers that desktop is back
+      for (const [peerId] of existingRoom.peers) {
+        const peerClient = this.findClientById(peerId);
+        if (peerClient) {
+          this.send(peerClient.ws, {
+            type: 'joined',
+            payload: {
+              desktopPublicKey: publicKey,
+              serverName: existingRoom.serverName
+            },
+            timestamp: Date.now()
+          });
+        }
       }
     } else {
-      // Generate new unique code
-      do {
-        code = generateCode();
-      } while (this.rooms.has(code));
-
-      // Create room
+      // Create new room with static ID
       const room: RelayRoom = {
-        code,
+        roomId: normalizedRoomId,
         desktopId: client.id,
         desktopPublicKey: publicKey,
+        passwordHash: passwordHash || undefined,
+        serverName: serverName || undefined,
         peers: new Map(),
         createdAt: Date.now(),
-        expiresAt: Date.now() + this.config.codeExpiryMs
+        lastDesktopSeen: Date.now(),
+        isDesktopOnline: true
       };
 
-      this.rooms.set(code, room);
+      this.rooms.set(normalizedRoomId, room);
+      console.log(`[Relay] Desktop created room: ${normalizedRoomId}${passwordHash ? ' (password protected)' : ''}`);
     }
 
     // Update client
     client.isDesktop = true;
-    client.roomCode = code;
+    client.roomCode = normalizedRoomId;
     client.publicKey = publicKey;
 
     // Send confirmation
     this.send(ws, {
       type: 'registered',
       payload: {
-        code,
-        expiresAt: this.rooms.get(code)!.expiresAt
+        roomId: normalizedRoomId,
+        hasPassword: !!this.rooms.get(normalizedRoomId)!.passwordHash
       },
       timestamp: Date.now()
     });
 
-    console.log(`[Relay] Desktop registered: ${code}`);
+    console.log(`[Relay] Desktop registered: ${normalizedRoomId}`);
   }
 
   /**
    * Handle mobile join request
    */
   private handleJoin(ws: WebSocket, client: ConnectedClient, message: JoinMessage): void {
-    const { code, publicKey, deviceName, userAgent } = message.payload;
-    const normalizedCode = normalizeCode(code);
+    const { roomId, publicKey, deviceName, userAgent, passwordHash } = message.payload;
+
+    // Support both old 'code' field and new 'roomId' field for backwards compatibility
+    const roomIdToUse = roomId || (message.payload as any).code;
+    if (!roomIdToUse) {
+      this.sendError(ws, 'MISSING_ROOM_ID', 'Room ID is required');
+      return;
+    }
+
+    const normalizedRoomId = normalizeCode(roomIdToUse);
 
     // Find room
-    const room = this.rooms.get(normalizedCode);
+    const room = this.rooms.get(normalizedRoomId);
     if (!room) {
-      this.sendError(ws, 'ROOM_NOT_FOUND', 'Invalid or expired connection code');
+      this.sendError(ws, 'ROOM_NOT_FOUND', 'Room not found. Make sure the desktop app is running.');
       return;
+    }
+
+    // Check password if room requires it
+    if (room.passwordHash) {
+      if (!passwordHash) {
+        // Password required but not provided - request it
+        this.send(ws, {
+          type: 'auth-required',
+          payload: {
+            roomId: normalizedRoomId,
+            serverName: room.serverName
+          },
+          timestamp: Date.now()
+        });
+        return;
+      }
+
+      // Verify password hash matches
+      if (passwordHash !== room.passwordHash) {
+        this.sendError(ws, 'INVALID_PASSWORD', 'Incorrect password');
+        return;
+      }
     }
 
     // Check if room is full
     if (room.peers.size >= this.config.maxPeersPerRoom) {
       this.sendError(ws, 'ROOM_FULL', 'Maximum devices reached');
+      return;
+    }
+
+    // Check if desktop is online
+    if (!room.isDesktopOnline || !room.desktopId) {
+      // Still add peer to room - they'll get notified when desktop comes back
+      const peer: RelayPeer = {
+        id: client.id,
+        publicKey,
+        deviceName,
+        userAgent,
+        connectedAt: Date.now()
+      };
+      room.peers.set(client.id, peer);
+      client.roomCode = normalizedRoomId;
+      client.publicKey = publicKey;
+
+      this.sendError(ws, 'DESKTOP_OFFLINE', 'Desktop is currently offline. Waiting for connection...');
       return;
     }
 
@@ -287,17 +346,15 @@ export class RelayServer {
     room.peers.set(client.id, peer);
 
     // Update client
-    client.roomCode = normalizedCode;
+    client.roomCode = normalizedRoomId;
     client.publicKey = publicKey;
-
-    // Extend room expiry since someone joined
-    room.expiresAt = Date.now() + (30 * 60 * 1000); // 30 minutes
 
     // Notify mobile of success
     this.send(ws, {
       type: 'joined',
       payload: {
-        desktopPublicKey: room.desktopPublicKey
+        desktopPublicKey: room.desktopPublicKey,
+        serverName: room.serverName
       },
       timestamp: Date.now()
     });
@@ -317,7 +374,7 @@ export class RelayServer {
       });
     }
 
-    console.log(`[Relay] Mobile joined ${normalizedCode}: ${deviceName}`);
+    console.log(`[Relay] Mobile joined ${normalizedRoomId}: ${deviceName}`);
   }
 
   /**
@@ -362,13 +419,15 @@ export class RelayServer {
       }
     } else {
       // Mobile sending to desktop
-      const desktopClient = this.findClientById(room.desktopId);
-      if (desktopClient) {
-        this.send(desktopClient.ws, {
-          type: 'data',
-          payload: { encrypted, nonce, from: client.id },
-          timestamp: Date.now()
-        });
+      if (room.desktopId) {
+        const desktopClient = this.findClientById(room.desktopId);
+        if (desktopClient) {
+          this.send(desktopClient.ws, {
+            type: 'data',
+            payload: { encrypted, nonce, from: client.id },
+            timestamp: Date.now()
+          });
+        }
       }
     }
   }
@@ -383,7 +442,12 @@ export class RelayServer {
       const room = this.rooms.get(client.roomCode);
       if (room) {
         if (client.isDesktop) {
-          // Desktop disconnected - notify all peers
+          // Desktop disconnected - mark room as offline
+          room.isDesktopOnline = false;
+          room.desktopId = null;
+          room.lastDesktopSeen = Date.now();
+
+          // Notify all peers that desktop went offline
           for (const [peerId] of room.peers) {
             const peerClient = this.findClientById(peerId);
             if (peerClient) {
@@ -394,19 +458,21 @@ export class RelayServer {
               });
             }
           }
-          // Don't delete room immediately - desktop may reconnect
-          // Room will be cleaned up by expiry
+          // Don't delete room - it's static and will persist for reconnection
+          console.log(`[Relay] Desktop offline for room: ${client.roomCode}`);
         } else {
           // Mobile disconnected - remove from room and notify desktop
           room.peers.delete(client.id);
 
-          const desktopClient = this.findClientById(room.desktopId);
-          if (desktopClient) {
-            this.send(desktopClient.ws, {
-              type: 'peer-left',
-              payload: { peerId: client.id },
-              timestamp: Date.now()
-            });
+          if (room.desktopId) {
+            const desktopClient = this.findClientById(room.desktopId);
+            if (desktopClient) {
+              this.send(desktopClient.ws, {
+                type: 'peer-left',
+                payload: { peerId: client.id },
+                timestamp: Date.now()
+              });
+            }
           }
         }
       }
@@ -416,21 +482,28 @@ export class RelayServer {
   }
 
   /**
-   * Clean up expired rooms
+   * Clean up abandoned rooms (desktop offline for too long)
    */
   private cleanupExpiredRooms(): void {
     const now = Date.now();
     let cleaned = 0;
 
-    for (const [code, room] of this.rooms) {
-      if (now > room.expiresAt && room.peers.size === 0) {
-        this.rooms.delete(code);
+    for (const [roomId, room] of this.rooms) {
+      // Only clean up rooms where:
+      // 1. Desktop is offline
+      // 2. No peers connected
+      // 3. Desktop has been offline longer than cleanup threshold
+      if (!room.isDesktopOnline &&
+          room.peers.size === 0 &&
+          (now - room.lastDesktopSeen) > this.config.roomCleanupMs) {
+        this.rooms.delete(roomId);
         cleaned++;
+        console.log(`[Relay] Cleaned up abandoned room: ${roomId}`);
       }
     }
 
     if (cleaned > 0) {
-      console.log(`[Relay] Cleaned up ${cleaned} expired rooms`);
+      console.log(`[Relay] Cleaned up ${cleaned} abandoned rooms`);
     }
   }
 
