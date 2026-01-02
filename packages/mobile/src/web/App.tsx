@@ -26,6 +26,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { PluginsPage } from './pages/PluginsPage';
 import { PluginDetailPage } from './pages/PluginDetailPage';
 import { AuthPage } from './pages/AuthPage';
+import { GenrePage } from './pages/GenrePage';
 
 // Check if we're in remote mode (GitHub Pages, etc.)
 function isRemoteMode(): boolean {
@@ -132,6 +133,7 @@ function AnimatedRoutes() {
         <Route path="/playlist/:playlistId" element={<PlaylistDetailPage />} />
         <Route path="/artist/:artistId" element={<ArtistPage />} />
         <Route path="/album/:albumId" element={<AlbumPage />} />
+        <Route path="/genre/:genreId" element={<GenrePage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/plugins" element={<PluginsPage />} />
         <Route path="/plugins/:pluginId" element={<PluginDetailPage />} />

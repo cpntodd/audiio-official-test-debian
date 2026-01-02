@@ -609,8 +609,31 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
         }
       }
 
+      // Genre browse section (always show if we have genres)
+      try {
+        const defaultGenres = [
+          { id: 'pop', name: 'Pop', color: '#E91E63' },
+          { id: 'rock', name: 'Rock', color: '#F44336' },
+          { id: 'hip-hop', name: 'Hip Hop', color: '#9C27B0' },
+          { id: 'r-n-b', name: 'R&B', color: '#673AB7' },
+          { id: 'electronic', name: 'Electronic', color: '#3F51B5' },
+          { id: 'jazz', name: 'Jazz', color: '#2196F3' },
+          { id: 'classical', name: 'Classical', color: '#009688' },
+          { id: 'country', name: 'Country', color: '#FF9800' }
+        ];
+
+        sections.push({
+          id: 'browse-genres',
+          type: 'genres',
+          title: 'Browse by Genre',
+          genres: defaultGenres
+        });
+      } catch (e) {
+        console.error('[Mobile API] Failed to add genre section:', e);
+      }
+
       // Fallback: If no sections, use search to get some content
-      if (sections.length === 0 && orchestrators?.search) {
+      if (sections.length <= 1 && orchestrators?.search) {
         try {
           const result = await orchestrators.search.search('popular music', { limit: 12 });
           const transformed = transformCharts({
@@ -1908,6 +1931,282 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     } catch (error) {
       console.error('[Library API] Remove from playlist error:', error);
       return reply.code(500).send({ error: 'Failed to remove from playlist' });
+    }
+  });
+
+  // ========================================
+  // Artist Enrichment (Plugin-powered)
+  // ========================================
+
+  // Get available enrichment types
+  fastify.get('/api/enrichment/types', async (_request: FastifyRequest, _reply: FastifyReply) => {
+    if (!orchestrators?.registry?.getAvailableEnrichmentTypes) {
+      return { types: [] };
+    }
+
+    const types = orchestrators.registry.getAvailableEnrichmentTypes();
+    return { types };
+  });
+
+  // Get music videos for artist
+  fastify.get('/api/enrichment/videos/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+    const { limit } = request.query as { limit?: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('videos') || [];
+    if (providers.length === 0) {
+      return { success: false, data: [], error: 'No video provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getVideos) {
+          const videos = await provider.getVideos(decodeURIComponent(artistName), parseInt(limit || '8', 10));
+          if (videos && videos.length > 0) {
+            return { success: true, data: videos, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: [] };
+    } catch (error) {
+      console.error('[Enrichment API] Videos error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch videos' });
+    }
+  });
+
+  // Get artist timeline
+  fastify.get('/api/enrichment/timeline/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('timeline') || [];
+    if (providers.length === 0) {
+      return { success: false, data: [], error: 'No timeline provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getTimeline) {
+          const timeline = await provider.getTimeline(decodeURIComponent(artistName));
+          if (timeline && timeline.length > 0) {
+            return { success: true, data: timeline, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: [] };
+    } catch (error) {
+      console.error('[Enrichment API] Timeline error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch timeline' });
+    }
+  });
+
+  // Get setlists
+  fastify.get('/api/enrichment/setlists/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+    const { mbid, limit } = request.query as { mbid?: string; limit?: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('setlists') || [];
+    if (providers.length === 0) {
+      return { success: false, data: [], error: 'No setlist provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getSetlists) {
+          const setlists = await provider.getSetlists(decodeURIComponent(artistName), mbid, parseInt(limit || '5', 10));
+          if (setlists && setlists.length > 0) {
+            return { success: true, data: setlists, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: [] };
+    } catch (error) {
+      console.error('[Enrichment API] Setlists error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch setlists' });
+    }
+  });
+
+  // Get concerts
+  fastify.get('/api/enrichment/concerts/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('concerts') || [];
+    if (providers.length === 0) {
+      return { success: false, data: [], error: 'No concert provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getConcerts) {
+          const concerts = await provider.getConcerts(decodeURIComponent(artistName));
+          if (concerts && concerts.length > 0) {
+            return { success: true, data: concerts, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: [] };
+    } catch (error) {
+      console.error('[Enrichment API] Concerts error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch concerts' });
+    }
+  });
+
+  // Get gallery/images
+  fastify.get('/api/enrichment/gallery/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+    const { mbid } = request.query as { mbid?: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('gallery') || [];
+    if (providers.length === 0) {
+      return { success: false, data: null, error: 'No gallery provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getGallery) {
+          const gallery = await provider.getGallery(mbid, decodeURIComponent(artistName));
+          if (gallery) {
+            return { success: true, data: gallery, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: null };
+    } catch (error) {
+      console.error('[Enrichment API] Gallery error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch gallery' });
+    }
+  });
+
+  // Get merchandise link
+  fastify.get('/api/enrichment/merchandise/:artistName', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { artistName } = request.params as { artistName: string };
+
+    if (!orchestrators?.registry) {
+      return reply.code(503).send({ error: 'Registry not available' });
+    }
+
+    const providers = orchestrators.registry.getArtistEnrichmentProvidersByType?.('merchandise') || [];
+    if (providers.length === 0) {
+      return { success: false, data: null, error: 'No merchandise provider available' };
+    }
+
+    try {
+      for (const provider of providers) {
+        if (provider.getMerchandise) {
+          const merchUrl = await provider.getMerchandise(decodeURIComponent(artistName));
+          if (merchUrl) {
+            return { success: true, data: merchUrl, source: provider.manifest.id };
+          }
+        }
+      }
+      return { success: true, data: null };
+    } catch (error) {
+      console.error('[Enrichment API] Merchandise error:', error);
+      return reply.code(500).send({ success: false, error: 'Failed to fetch merchandise' });
+    }
+  });
+
+  // ========================================
+  // Genre & Mood Discovery
+  // ========================================
+
+  // Get available genres
+  fastify.get('/api/discover/genres', async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (!orchestrators?.metadata?.getGenres) {
+      // Return default genres if no provider
+      return {
+        genres: [
+          { id: 'pop', name: 'Pop' },
+          { id: 'rock', name: 'Rock' },
+          { id: 'hip-hop', name: 'Hip Hop' },
+          { id: 'r-n-b', name: 'R&B' },
+          { id: 'electronic', name: 'Electronic' },
+          { id: 'jazz', name: 'Jazz' },
+          { id: 'classical', name: 'Classical' },
+          { id: 'country', name: 'Country' },
+          { id: 'latin', name: 'Latin' },
+          { id: 'metal', name: 'Metal' }
+        ]
+      };
+    }
+
+    try {
+      const genres = await orchestrators.metadata.getGenres();
+      return { genres };
+    } catch (error) {
+      console.error('[Discover API] Genres error:', error);
+      return reply.code(500).send({ error: 'Failed to fetch genres' });
+    }
+  });
+
+  // Get tracks by genre
+  fastify.get('/api/discover/genre/:genreId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { genreId } = request.params as { genreId: string };
+    const { limit } = request.query as { limit?: string };
+
+    try {
+      // Try to get genre-specific charts/tracks
+      if (orchestrators?.metadata?.getGenreTracks) {
+        const tracks = await orchestrators.metadata.getGenreTracks(genreId, parseInt(limit || '20', 10));
+        return { tracks: tracks.map(transformTrack) };
+      }
+
+      // Fallback: search by genre name
+      if (orchestrators?.search) {
+        const result = await orchestrators.search.search(genreId.replace(/-/g, ' '), { limit: parseInt(limit || '20', 10) });
+        return { tracks: (result.tracks || []).map(transformTrack) };
+      }
+
+      return reply.code(503).send({ error: 'Genre discovery not available' });
+    } catch (error) {
+      console.error('[Discover API] Genre tracks error:', error);
+      return reply.code(500).send({ error: 'Failed to fetch genre tracks' });
+    }
+  });
+
+  // Get radio/similar tracks based on a seed track
+  fastify.get('/api/discover/radio/:trackId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { trackId } = request.params as { trackId: string };
+    const { limit } = request.query as { limit?: string };
+
+    try {
+      // Try ML service first
+      if (orchestrators?.mlService?.getSimilarTracks) {
+        const similar = await orchestrators.mlService.getSimilarTracks(trackId, parseInt(limit || '20', 10));
+        if (similar && similar.length > 0) {
+          return { tracks: similar.map(transformTrack), source: 'ml' };
+        }
+      }
+
+      // Fallback to metadata provider radio
+      if (orchestrators?.metadata?.getRadio) {
+        const tracks = await orchestrators.metadata.getRadio(trackId, parseInt(limit || '20', 10));
+        return { tracks: tracks.map(transformTrack), source: 'metadata' };
+      }
+
+      return reply.code(503).send({ error: 'Radio not available' });
+    } catch (error) {
+      console.error('[Discover API] Radio error:', error);
+      return reply.code(500).send({ error: 'Failed to get radio tracks' });
     }
   });
 }

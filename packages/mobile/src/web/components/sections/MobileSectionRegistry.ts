@@ -53,6 +53,13 @@ export interface SectionAlbum {
   source?: string;
 }
 
+export interface SectionGenre {
+  id: string;
+  name: string;
+  color?: string;
+  image?: string;
+}
+
 export interface SectionData {
   id: string;
   type: string;
@@ -61,6 +68,7 @@ export interface SectionData {
   tracks?: SectionTrack[];
   artists?: SectionArtist[];
   albums?: SectionAlbum[];
+  genres?: SectionGenre[];
   isPersonalized?: boolean;
   isPluginPowered?: boolean;
   pluginName?: string;
@@ -94,6 +102,11 @@ export const sectionTypeLayouts: Record<string, SectionLayout> = {
   'lyrics-highlight': 'horizontal',
   'streaming-highlights': 'horizontal',
   'seasonal': 'horizontal',
+  'trending': 'horizontal',
+  'recommended': 'horizontal',
+  'ml-powered': 'horizontal',
+  'mixes': 'horizontal',
+  'plugin': 'horizontal',
 
   // Large featured cards
   'featured': 'large-cards',
@@ -104,6 +117,8 @@ export const sectionTypeLayouts: Record<string, SectionLayout> = {
   'top-artists': 'grid',
   'popular-artists': 'grid',
   'suggested-artists': 'grid',
+  'artists': 'grid',
+  'genres': 'grid',
 
   // Compact list layouts
   'audio-analysis': 'compact',
