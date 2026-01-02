@@ -23,6 +23,8 @@ export interface P2PPeer {
 
 export interface P2PConfig extends Partial<RelayClientConfig> {
   relayUrl?: string;
+  /** Persistent room code to request (for server identity) */
+  persistentCode?: string;
 }
 
 // Relay server URL - will be updated after Fly.io deployment
@@ -43,8 +45,9 @@ export class P2PManager extends EventEmitter {
 
   /**
    * Start as host (desktop) - get a connection code
+   * @param persistentCode Optional persistent code to request (for server identity)
    */
-  async startAsHost(): Promise<{ code: string }> {
+  async startAsHost(persistentCode?: string): Promise<{ code: string }> {
     if (this.isRunning) {
       throw new Error('P2P already running');
     }
@@ -59,6 +62,13 @@ export class P2PManager extends EventEmitter {
       reconnectDelay: 3000,
       maxReconnectAttempts: 10
     });
+
+    // Request persistent code if provided (for Plex-like reconnection)
+    const codeToRequest = persistentCode || this.config.persistentCode;
+    if (codeToRequest) {
+      this.relay.setRequestedCode(codeToRequest);
+      console.log(`[P2P] Requesting persistent code: ${codeToRequest}`);
+    }
 
     // Set up event handlers
     this.relay.on('registered', (code, expiresAt) => {
@@ -219,6 +229,21 @@ export class P2PManager extends EventEmitter {
       status: response.status,
       data: response.data
     }, peerId);
+  }
+
+  /**
+   * Get current relay URL
+   */
+  getRelayUrl(): string {
+    return this.config.relayUrl || DEFAULT_RELAY_URL;
+  }
+
+  /**
+   * Set custom relay URL (takes effect on next restart)
+   */
+  setRelayUrl(url: string): void {
+    this.config.relayUrl = url;
+    console.log(`[P2P] Relay URL set to: ${url} (will take effect on next restart)`);
   }
 }
 

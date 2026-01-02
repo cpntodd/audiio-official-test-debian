@@ -1,5 +1,12 @@
 /**
  * Feature Aggregator - Combines features from multiple providers
+ *
+ * Supports two modes for plugin providers:
+ * - override: Provider completely replaces core features for the types it provides
+ * - supplement: Provider fills in missing features without overwriting existing ones
+ *
+ * Core providers (priority 0-50) are always evaluated first.
+ * Plugin providers (priority 51+) are then evaluated based on their mode.
  */
 
 import type {
@@ -15,13 +22,29 @@ import type {
 } from '@audiio/ml-sdk';
 import { MemoryCache } from '@audiio/ml-sdk';
 
+/**
+ * Extended provider interface with mode support
+ */
+export interface ExtendedFeatureProvider extends FeatureProvider {
+  /** Provider mode: override replaces core, supplement fills gaps */
+  mode?: 'override' | 'supplement';
+}
+
+/**
+ * Configuration for feature aggregation with mode support
+ */
+export interface ExtendedAggregationConfig extends FeatureAggregationConfig {
+  /** Priority threshold below which providers are considered "core" */
+  corePriorityThreshold: number;
+}
+
 export class FeatureAggregator {
-  private providers: Map<string, FeatureProvider> = new Map();
+  private providers: Map<string, ExtendedFeatureProvider> = new Map();
   private cache: MemoryCache<AggregatedFeatures>;
-  private config: FeatureAggregationConfig;
+  private config: ExtendedAggregationConfig;
   private pendingRequests: Map<string, Promise<AggregatedFeatures>> = new Map();
 
-  constructor(config: Partial<FeatureAggregationConfig> = {}) {
+  constructor(config: Partial<ExtendedAggregationConfig> = {}) {
     this.config = {
       strategy: 'priority',
       conflictResolution: 'highest-priority',
@@ -29,6 +52,7 @@ export class FeatureAggregator {
       cacheDuration: 24 * 60 * 60 * 1000, // 24 hours
       parallelFetch: true,
       providerTimeout: 10000,
+      corePriorityThreshold: 50, // Providers with priority <= 50 are core
       ...config,
     };
 
@@ -37,10 +61,17 @@ export class FeatureAggregator {
 
   /**
    * Register a feature provider
+   * @param provider The provider to register
+   * @param mode Optional mode: 'override' replaces core features, 'supplement' fills gaps
    */
-  register(provider: FeatureProvider): void {
-    this.providers.set(provider.id, provider);
-    console.log(`[FeatureAggregator] Registered provider: ${provider.id} (priority: ${provider.priority})`);
+  register(provider: FeatureProvider | ExtendedFeatureProvider, mode?: 'override' | 'supplement'): void {
+    const extendedProvider: ExtendedFeatureProvider = {
+      ...provider,
+      mode: (provider as ExtendedFeatureProvider).mode ?? mode ?? 'supplement',
+    };
+    this.providers.set(provider.id, extendedProvider);
+    const isCore = provider.priority <= this.config.corePriorityThreshold;
+    console.log(`[FeatureAggregator] Registered ${isCore ? 'core' : 'plugin'} provider: ${provider.id} (priority: ${provider.priority}, mode: ${extendedProvider.mode})`);
   }
 
   /**
@@ -54,22 +85,40 @@ export class FeatureAggregator {
   /**
    * Get all registered providers
    */
-  getProviders(): FeatureProvider[] {
+  getProviders(): ExtendedFeatureProvider[] {
     return Array.from(this.providers.values());
   }
 
   /**
    * Get providers sorted by priority (highest first)
    */
-  getProvidersByPriority(): FeatureProvider[] {
+  getProvidersByPriority(): ExtendedFeatureProvider[] {
     return Array.from(this.providers.values())
+      .sort((a, b) => b.priority - a.priority);
+  }
+
+  /**
+   * Get core providers (priority <= threshold)
+   */
+  getCoreProviders(): ExtendedFeatureProvider[] {
+    return Array.from(this.providers.values())
+      .filter(p => p.priority <= this.config.corePriorityThreshold)
+      .sort((a, b) => b.priority - a.priority);
+  }
+
+  /**
+   * Get plugin providers (priority > threshold)
+   */
+  getPluginProviders(): ExtendedFeatureProvider[] {
+    return Array.from(this.providers.values())
+      .filter(p => p.priority > this.config.corePriorityThreshold)
       .sort((a, b) => b.priority - a.priority);
   }
 
   /**
    * Get providers with a specific capability
    */
-  getProvidersWithCapability(capability: keyof ProviderCapabilities): FeatureProvider[] {
+  getProvidersWithCapability(capability: keyof ProviderCapabilities): ExtendedFeatureProvider[] {
     return this.getProvidersByPriority()
       .filter(p => p.capabilities[capability]);
   }
@@ -193,9 +242,13 @@ export class FeatureAggregator {
 
   /**
    * Fetch and aggregate features from all providers
+   *
+   * Processing order:
+   * 1. Core providers (priority <= threshold) - establish baseline
+   * 2. Plugin providers with mode='override' - replace features
+   * 3. Plugin providers with mode='supplement' - fill gaps only
    */
   private async fetchAndAggregate(trackId: string): Promise<AggregatedFeatures> {
-    const providers = this.getProvidersByPriority();
     const providerInfos: FeatureProviderInfo[] = [];
 
     let audio: AudioFeatures | undefined;
@@ -204,65 +257,93 @@ export class FeatureAggregator {
     let embedding: number[] | undefined;
     let fingerprint: string | undefined;
 
-    if (this.config.parallelFetch) {
-      // Fetch from all providers in parallel
-      const results = await Promise.all(
-        providers.map(p => this.fetchFromProvider(trackId, p))
-      );
+    // Phase 1: Get core features first
+    const coreProviders = this.getCoreProviders();
+    const pluginProviders = this.getPluginProviders();
 
-      for (const result of results) {
-        if (!result) continue;
+    // Helper to apply features based on mode
+    const applyFeatures = (
+      result: { provider: ExtendedFeatureProvider; features: Partial<AggregatedFeatures>; providedFeatures: string[] } | null,
+      mode: 'override' | 'supplement'
+    ) => {
+      if (!result) return;
 
-        const { provider, features, providedFeatures } = result;
+      const { provider, features, providedFeatures } = result;
 
-        // Merge based on strategy
-        if (this.config.strategy === 'priority') {
-          // First provider wins for each feature type
-          if (features.audio && !audio) audio = features.audio;
-          if (features.emotion && !emotion) emotion = features.emotion;
-          if (features.lyrics && !lyrics) lyrics = features.lyrics;
-          if (features.embedding && !embedding) embedding = features.embedding;
-          if (features.fingerprint && !fingerprint) fingerprint = features.fingerprint;
-        } else {
-          // Merge strategy - combine all features
-          if (features.audio) audio = this.mergeAudioFeatures(audio, features.audio);
-          if (features.emotion) emotion = features.emotion ?? emotion;
-          if (features.lyrics) lyrics = features.lyrics ?? lyrics;
-          if (features.embedding) embedding = features.embedding ?? embedding;
-          if (features.fingerprint) fingerprint = features.fingerprint ?? fingerprint;
-        }
-
-        if (providedFeatures.length > 0) {
-          providerInfos.push({
-            providerId: provider.id,
-            providedFeatures,
-            confidence: 1.0, // TODO: Calculate actual confidence
-          });
-        }
-      }
-    } else {
-      // Fetch sequentially from highest priority
-      for (const provider of providers) {
-        const result = await this.fetchFromProvider(trackId, provider);
-        if (!result) continue;
-
-        const { features, providedFeatures } = result;
-
-        // Set features if not already set
-        if (features.audio && !audio) audio = features.audio;
+      if (mode === 'override') {
+        // Override mode: replace all features from this provider
+        if (features.audio) audio = features.audio;
+        if (features.emotion) emotion = features.emotion;
+        if (features.lyrics) lyrics = features.lyrics;
+        if (features.embedding) embedding = features.embedding;
+        if (features.fingerprint) fingerprint = features.fingerprint;
+      } else {
+        // Supplement mode: only fill in missing features
+        if (features.audio) audio = audio ? this.mergeAudioFeatures(audio, features.audio) : features.audio;
         if (features.emotion && !emotion) emotion = features.emotion;
         if (features.lyrics && !lyrics) lyrics = features.lyrics;
         if (features.embedding && !embedding) embedding = features.embedding;
         if (features.fingerprint && !fingerprint) fingerprint = features.fingerprint;
+      }
 
-        if (providedFeatures.length > 0) {
-          providerInfos.push({
-            providerId: provider.id,
-            providedFeatures,
-            confidence: 1.0,
-          });
-        }
+      if (providedFeatures.length > 0) {
+        providerInfos.push({
+          providerId: provider.id,
+          providedFeatures,
+          confidence: 1.0,
+        });
+      }
+    };
 
+    if (this.config.parallelFetch) {
+      // Fetch from core providers in parallel
+      const coreResults = await Promise.all(
+        coreProviders.map(p => this.fetchFromProvider(trackId, p))
+      );
+
+      // Apply core features (supplement mode - fill in gaps)
+      for (const result of coreResults) {
+        applyFeatures(result, 'supplement');
+      }
+
+      // Fetch from plugin providers in parallel
+      const pluginResults = await Promise.all(
+        pluginProviders.map(p => this.fetchFromProvider(trackId, p))
+      );
+
+      // Sort plugin results: override providers first, then supplement
+      const sortedPluginResults = pluginResults
+        .filter((r): r is NonNullable<typeof r> => r !== null)
+        .sort((a, b) => {
+          const aMode = a.provider.mode === 'override' ? 0 : 1;
+          const bMode = b.provider.mode === 'override' ? 0 : 1;
+          if (aMode !== bMode) return aMode - bMode;
+          return b.provider.priority - a.provider.priority;
+        });
+
+      // Apply plugin features based on their mode
+      for (const result of sortedPluginResults) {
+        applyFeatures(result, result.provider.mode || 'supplement');
+      }
+    } else {
+      // Sequential mode: process core first, then plugins
+      for (const provider of coreProviders) {
+        const result = await this.fetchFromProvider(trackId, provider);
+        applyFeatures(result, 'supplement');
+      }
+
+      // Process override plugins first
+      const overridePlugins = pluginProviders.filter(p => p.mode === 'override');
+      for (const provider of overridePlugins) {
+        const result = await this.fetchFromProvider(trackId, provider);
+        applyFeatures(result, 'override');
+      }
+
+      // Then supplement plugins
+      const supplementPlugins = pluginProviders.filter(p => p.mode !== 'override');
+      for (const provider of supplementPlugins) {
+        const result = await this.fetchFromProvider(trackId, provider);
+        applyFeatures(result, 'supplement');
         // Stop if we have all features
         if (audio && emotion && lyrics && embedding) break;
       }
@@ -285,9 +366,9 @@ export class FeatureAggregator {
    */
   private async fetchFromProvider(
     trackId: string,
-    provider: FeatureProvider
+    provider: ExtendedFeatureProvider
   ): Promise<{
-    provider: FeatureProvider;
+    provider: ExtendedFeatureProvider;
     features: Partial<AggregatedFeatures>;
     providedFeatures: string[];
   } | null> {

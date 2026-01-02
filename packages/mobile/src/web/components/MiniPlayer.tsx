@@ -9,8 +9,7 @@
  */
 
 import React, { useRef, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { usePlayerStore, usePlaybackState, usePlaybackControls } from '../stores/player-store';
+import { usePlaybackState, usePlaybackControls } from '../stores/player-store';
 import { getTrackArtwork } from '../utils/artwork';
 import { PlayIcon, PauseIcon, MusicNoteIcon, NextIcon, PrevIcon } from '@audiio/icons';
 import { triggerHaptic } from '../utils/haptics';
@@ -19,6 +18,10 @@ import styles from './MiniPlayer.module.css';
 // Swipe threshold in pixels
 const SWIPE_THRESHOLD = 50;
 const SWIPE_VELOCITY_THRESHOLD = 0.3;
+
+interface MiniPlayerProps {
+  onExpand?: () => void;
+}
 
 interface TouchState {
   startX: number;
@@ -29,8 +32,7 @@ interface TouchState {
   isSwiping: boolean;
 }
 
-export function MiniPlayer() {
-  const navigate = useNavigate();
+export function MiniPlayer({ onExpand }: MiniPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [touchState, setTouchState] = useState<TouchState | null>(null);
   const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
@@ -42,6 +44,7 @@ export function MiniPlayer() {
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     const touch = e.touches[0];
+    if (!touch) return;
     setTouchState({
       startX: touch.clientX,
       startY: touch.clientY,
@@ -56,6 +59,7 @@ export function MiniPlayer() {
     if (!touchState) return;
 
     const touch = e.touches[0];
+    if (!touch) return;
     const deltaX = touch.clientX - touchState.startX;
     const deltaY = touch.clientY - touchState.startY;
 
@@ -97,7 +101,7 @@ export function MiniPlayer() {
     // Check for swipe up (open full player)
     if (deltaY < -SWIPE_THRESHOLD && Math.abs(deltaY) > Math.abs(deltaX)) {
       triggerHaptic('light');
-      navigate('/now-playing');
+      onExpand?.();
     }
     // Check for horizontal swipe
     else if (Math.abs(deltaX) > SWIPE_THRESHOLD || velocity > SWIPE_VELOCITY_THRESHOLD) {
@@ -116,7 +120,7 @@ export function MiniPlayer() {
     setTouchState(null);
     setTranslateX(0);
     setSwipeDirection(null);
-  }, [touchState, navigate, nextTrack, previousTrack]);
+  }, [touchState, onExpand, nextTrack, previousTrack]);
 
   if (!currentTrack) return null;
 
@@ -135,9 +139,9 @@ export function MiniPlayer() {
   };
 
   const handleClick = () => {
-    // Only navigate if not swiping
+    // Only expand if not swiping
     if (!touchState?.isSwiping && Math.abs(translateX) < 10) {
-      navigate('/now-playing');
+      onExpand?.();
     }
   };
 

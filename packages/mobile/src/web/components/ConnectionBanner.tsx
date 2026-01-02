@@ -7,15 +7,14 @@
  * - Animates smoothly in/out
  */
 
-import React from 'react';
 import { useConnectionStatus, usePlayerStore } from '../stores/player-store';
 import { useAuthStore } from '../stores/auth-store';
 import styles from './ConnectionBanner.module.css';
 
 export function ConnectionBanner() {
-  const { isConnected, connectionStatus, reconnectAttempts, lastError } = useConnectionStatus();
+  const { connectionStatus, reconnectAttempts, lastError } = useConnectionStatus();
   const connectWebSocket = usePlayerStore((state) => state.connectWebSocket);
-  const token = useAuthStore((state) => state.token);
+  const deviceToken = useAuthStore((state) => state.deviceToken);
 
   // Don't show if connected or never attempted connection
   if (connectionStatus === 'connected' || connectionStatus === 'disconnected') {
@@ -23,8 +22,8 @@ export function ConnectionBanner() {
   }
 
   const handleRetry = () => {
-    if (token) {
-      connectWebSocket(token);
+    if (deviceToken) {
+      connectWebSocket(deviceToken);
     }
   };
 

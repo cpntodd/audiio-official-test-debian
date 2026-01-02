@@ -68,6 +68,53 @@ export const LyricsIcon: React.FC<IconProps> = ({ size = 24, className, ...props
   </svg>
 );
 
+// Plain Lyrics Icon - Text lines only (no music note, for static/unsynced view)
+export const PlainLyricsIcon: React.FC<IconProps> = ({ size = 24, className, ...props }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    {...props}
+  >
+    <path d="M4 6h16" />
+    <path d="M4 10h16" />
+    <path d="M4 14h16" />
+    <path d="M4 18h12" />
+  </svg>
+);
+
+// Synced Lyrics Icon - Text lines with sync indicator (timing marks)
+export const SyncedLyricsIcon: React.FC<IconProps> = ({ size = 24, className, ...props }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    {...props}
+  >
+    <path d="M4 6h12" />
+    <path d="M4 10h10" />
+    <path d="M4 14h8" />
+    <path d="M4 18h10" />
+    {/* Sync/timing indicator */}
+    <path d="M19 4v4" />
+    <path d="M17 6h4" />
+    <circle cx="19" cy="14" r="3" />
+    <path d="M19 17v3" />
+  </svg>
+);
+
 // ============================================
 // Playlist Icons
 // ============================================

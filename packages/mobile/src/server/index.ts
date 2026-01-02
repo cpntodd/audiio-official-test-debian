@@ -16,21 +16,41 @@ import type { WebSocket } from 'ws';
 
 import { AccessManager } from './services/access-manager';
 import { SessionManager } from './services/session-manager';
+import { PairingService } from './services/pairing-service';
 import { P2PManager, type P2PPeer } from './services/p2p-manager';
 import { registerApiRoutes } from './api/routes';
 import { authMiddleware } from './middleware/auth';
 import type { ServerConfig, AccessConfig } from '../shared/types';
 import { DEFAULT_SERVER_CONFIG } from '../shared/types';
 
+// Playback orchestrator interface (matching desktop)
+interface PlaybackOrchestrator {
+  play(track: unknown): Promise<unknown>;
+  pause?(): void;
+  resume?(): void;
+  seek?(position: number): void;
+  next?(): void;
+  previous?(): void;
+  setVolume?(volume: number): void;
+  toggleShuffle?(): void;
+  toggleRepeat?(): void;
+  playFromQueue?(index: number): void;
+  addToQueue?(track: unknown): void;
+  playNext?(track: unknown): void;
+  getState?(): unknown;
+}
+
 export interface MobileServerOptions {
   config?: Partial<ServerConfig>;
   /** Callback when server is ready with access URLs */
   onReady?: (access: AccessConfig) => void;
+  /** Custom relay server URL (default: wss://audiio-relay.fly.dev) */
+  customRelayUrl?: string;
   /** Core orchestrators from desktop app */
   orchestrators?: {
     search?: unknown;
     trackResolver?: unknown;
-    playback?: unknown;
+    playback?: PlaybackOrchestrator;
     registry?: unknown;
     /** Metadata provider for trending, charts, etc. */
     metadata?: unknown;
@@ -48,6 +68,7 @@ export class MobileServer {
   private config: ServerConfig;
   private accessManager: AccessManager;
   private sessionManager: SessionManager;
+  private pairingService: PairingService;
   private p2pManager: P2PManager;
   private isRunning = false;
   private webDistPath: string;
@@ -62,7 +83,13 @@ export class MobileServer {
     this.config = { ...DEFAULT_SERVER_CONFIG, ...options.config };
     this.accessManager = new AccessManager();
     this.sessionManager = new SessionManager();
-    this.p2pManager = new P2PManager();
+    this.pairingService = new PairingService({
+      dataPath: (options.config as any)?.dataPath,
+      customRelayUrl: options.customRelayUrl
+    });
+    this.p2pManager = new P2PManager({
+      relayUrl: options.customRelayUrl
+    });
     // __dirname is dist/server/server, web is at dist/web, so go up two levels
     this.webDistPath = path.join(__dirname, '../../web');
 
@@ -157,13 +184,101 @@ export class MobileServer {
     }
   }
 
-  private handleP2PPlaybackCommand(peerId: string, msg: { requestId?: string; payload?: unknown }): void {
-    // Forward playback commands to desktop playback orchestrator
-    this.p2pManager.send({
-      type: 'command-ack',
-      requestId: msg.requestId,
-      success: true
-    }, peerId);
+  private async handleP2PPlaybackCommand(peerId: string, msg: { requestId?: string; payload?: unknown }): Promise<void> {
+    const orchestrators = this.options.orchestrators;
+    const payload = msg.payload as { command: string; track?: unknown; position?: number; volume?: number; index?: number } | undefined;
+
+    if (!payload?.command) {
+      this.p2pManager.send({
+        type: 'command-ack',
+        requestId: msg.requestId,
+        success: false,
+        error: 'Missing command'
+      }, peerId);
+      return;
+    }
+
+    if (!orchestrators?.playback) {
+      console.warn('[P2P] Playback command received but orchestrator not available');
+      this.p2pManager.send({
+        type: 'command-ack',
+        requestId: msg.requestId,
+        success: false,
+        error: 'Playback not available'
+      }, peerId);
+      return;
+    }
+
+    console.log('[P2P] Playback command:', payload.command);
+
+    try {
+      switch (payload.command) {
+        case 'play':
+          if (payload.track) {
+            await orchestrators.playback.play(payload.track);
+          }
+          break;
+        case 'pause':
+          orchestrators.playback.pause?.();
+          break;
+        case 'resume':
+          orchestrators.playback.resume?.();
+          break;
+        case 'seek':
+          if (typeof payload.position === 'number') {
+            orchestrators.playback.seek?.(payload.position);
+          }
+          break;
+        case 'next':
+          orchestrators.playback.next?.();
+          break;
+        case 'previous':
+          orchestrators.playback.previous?.();
+          break;
+        case 'volume':
+          if (typeof payload.volume === 'number') {
+            orchestrators.playback.setVolume?.(payload.volume);
+          }
+          break;
+        case 'toggleShuffle':
+          orchestrators.playback.toggleShuffle?.();
+          break;
+        case 'toggleRepeat':
+          orchestrators.playback.toggleRepeat?.();
+          break;
+        case 'playFromQueue':
+          if (typeof payload.index === 'number') {
+            orchestrators.playback.playFromQueue?.(payload.index);
+          }
+          break;
+        case 'addToQueue':
+          if (payload.track) {
+            orchestrators.playback.addToQueue?.(payload.track);
+          }
+          break;
+        case 'playNext':
+          if (payload.track) {
+            orchestrators.playback.playNext?.(payload.track);
+          }
+          break;
+        default:
+          console.warn('[P2P] Unknown playback command:', payload.command);
+      }
+
+      this.p2pManager.send({
+        type: 'command-ack',
+        requestId: msg.requestId,
+        success: true
+      }, peerId);
+    } catch (error) {
+      console.error('[P2P] Playback command error:', error);
+      this.p2pManager.send({
+        type: 'command-ack',
+        requestId: msg.requestId,
+        success: false,
+        error: error instanceof Error ? error.message : 'Command failed'
+      }, peerId);
+    }
   }
 
   /**
@@ -190,13 +305,14 @@ export class MobileServer {
     // Static file serving
     await this.registerStaticFiles();
 
-    // Auth middleware
-    this.fastify.addHook('onRequest', authMiddleware(this.accessManager, this.sessionManager));
+    // Auth middleware - validates both legacy tokens and device tokens from pairing
+    this.fastify.addHook('onRequest', authMiddleware(this.accessManager, this.sessionManager, this.pairingService));
 
     // API routes
     registerApiRoutes(this.fastify, {
       accessManager: this.accessManager,
       sessionManager: this.sessionManager,
+      pairingService: this.pairingService,
       orchestrators: this.options.orchestrators
     });
 
@@ -259,11 +375,32 @@ export class MobileServer {
     this.fastify.get('/ws', { websocket: true }, (socket, req) => {
       const token = new URL(req.url!, `http://${req.headers.host}`).searchParams.get('token');
 
-      if (!token || !this.accessManager.validateToken(token)) {
+      if (!token) {
+        socket.close(4001, 'Token required');
+        return;
+      }
+
+      // Try both token validation methods:
+      // 1. AccessManager (legacy tokens)
+      // 2. DeviceManager (paired device tokens in format "deviceId:token")
+      let isValid = this.accessManager.validateToken(token);
+
+      if (!isValid && token.includes(':')) {
+        // Try device token format (deviceId:token)
+        const deviceManager = this.pairingService.getDeviceManager?.();
+        if (deviceManager) {
+          const result = deviceManager.validateCombinedToken(token);
+          isValid = result.valid;
+        }
+      }
+
+      if (!isValid) {
+        console.log('[WebSocket] Invalid token');
         socket.close(4001, 'Invalid token');
         return;
       }
 
+      console.log('[WebSocket] Token validated, creating session');
       const session = this.sessionManager.createSession(token, req.headers['user-agent']);
 
       socket.on('message', (message: Buffer) => {
@@ -334,27 +471,55 @@ export class MobileServer {
     // Generate access config
     const localUrl = `http://${getLocalIP()}:${actualPort}`;
 
+    // Initialize the pairing service (loads/creates persistent server identity)
+    await this.pairingService.initialize();
+
+    // Start the pairing service (generates WORD-WORD-NUMBER code)
+    const pairingCode = await this.pairingService.start(localUrl);
+    console.log(`[Mobile] Pairing code: ${pairingCode.code}`);
+
     // Start P2P for remote access (serverless - no backend needed!)
+    // Use persistent server identity code for Plex-like "pair once, connect forever"
     console.log('[P2P] Starting P2P for remote access...');
     try {
-      this.p2pInfo = await this.p2pManager.startAsHost();
+      // Get persistent relay code from server identity
+      const serverIdentity = this.pairingService.getServerIdentity();
+      const persistentCode = serverIdentity?.getRelayCode();
+
+      console.log(`[P2P] Server identity exists: ${!!serverIdentity}`);
+      console.log(`[P2P] Persistent relay code: ${persistentCode || 'none'}`);
+
+      this.p2pInfo = await this.p2pManager.startAsHost(persistentCode || undefined);
       console.log(`[P2P] Connection code: ${this.p2pInfo.code}`);
       console.log('[P2P] Remote access ready - works from anywhere!');
+
+      // Sync relay code to PairingService so it accepts both codes
+      this.pairingService.setRelayCode(this.p2pInfo.code);
+
+      if (persistentCode) {
+        console.log(`[P2P] Using persistent code for reconnection: ${persistentCode}`);
+      }
     } catch (error) {
       console.error('[P2P] Failed to start P2P:', error);
       this.p2pInfo = null;
     }
 
-    // Set up pairing callback if authManager is available
-    const authManager = this.options.orchestrators?.authManager as import('./services/auth-manager').AuthManager | undefined;
-    if (authManager) {
-      this.accessManager.setPairingCallback((userAgent: string) => {
-        return authManager.pairDevice(userAgent);
-      });
-      console.log('[Mobile] Pairing callback registered with AuthManager');
-    }
-
+    // Generate legacy access config for backwards compatibility
     const access = await this.accessManager.generateAccess(localUrl);
+
+    // Override with pairing service code (WORD-WORD-NUMBER format)
+    access.pairingCode = pairingCode.code;
+
+    // Update localUrl to use the new WORD-WORD-NUMBER code format
+    // Old format: ?token=XXX&pair=OLD_CODE
+    // New format: ?token=XXX&pair=WORD-WORD-NUMBER
+    const baseUrl = localUrl.split('?')[0];
+    access.localUrl = `${baseUrl}?token=${access.token}&pair=${pairingCode.code}`;
+
+    // Use the pairing service QR code (points to URL with WORD-WORD-NUMBER)
+    if (pairingCode.qrCode) {
+      access.qrCode = pairingCode.qrCode;
+    }
 
     // Update P2P manager with auth info so it can send to connecting peers
     if (this.p2pManager.getIsRunning() && access.token) {
@@ -416,6 +581,9 @@ export class MobileServer {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
+
+    // Stop pairing service
+    this.pairingService.stop();
 
     await this.p2pManager.stop();
     await this.fastify.close();
@@ -527,16 +695,194 @@ export class MobileServer {
     this.p2pManager.send(message);
   }
 
-  private handleWebSocketMessage(socket: WebSocket, sessionId: string, data: { type: string; payload?: unknown }) {
+  // ========================================
+  // Pairing Service (Device Management)
+  // ========================================
+
+  /**
+   * Get the pairing service
+   */
+  getPairingService(): PairingService {
+    return this.pairingService;
+  }
+
+  /**
+   * Get current pairing code info (full object for UI)
+   * Uses the relay code as the primary code (works for both local and remote)
+   */
+  getPairingCode(): { code: string; qrCode?: string; localUrl: string; expiresAt: number } | null {
+    // Use relay code if available (works from anywhere)
+    const relayCode = this.p2pManager.getConnectionCode();
+    const pairingInfo = this.pairingService.getCurrentCode();
+
+    if (!relayCode && !pairingInfo) return null;
+
+    return {
+      code: relayCode || pairingInfo?.code || '',
+      qrCode: pairingInfo?.qrCode,
+      localUrl: pairingInfo?.localUrl || '',
+      expiresAt: pairingInfo?.expiresAt || Date.now() + 300000 // 5 min default
+    };
+  }
+
+  /**
+   * Refresh the pairing code
+   */
+  async refreshPairingCode(): Promise<{ code: string; qrCode?: string; localUrl: string; expiresAt: number } | null> {
+    // Refresh the PairingService code (local QR codes etc)
+    const refreshed = await this.pairingService.refreshCode();
+
+    // Return with relay code as primary
+    const relayCode = this.p2pManager.getConnectionCode();
+
+    return {
+      code: relayCode || refreshed?.code || '',
+      qrCode: refreshed?.qrCode,
+      localUrl: refreshed?.localUrl || '',
+      expiresAt: refreshed?.expiresAt || Date.now() + 300000
+    };
+  }
+
+  /**
+   * Get paired devices
+   */
+  getDevices(): import('./services/device-manager').AuthorizedDevice[] {
+    return this.pairingService.getDevices();
+  }
+
+  /**
+   * Revoke a device
+   */
+  revokeDevice(deviceId: string): boolean {
+    return this.pairingService.revokeDevice(deviceId);
+  }
+
+  /**
+   * Revoke all devices
+   */
+  revokeAllDevices(): number {
+    return this.pairingService.revokeAllDevices();
+  }
+
+  /**
+   * Get custom relay URL
+   */
+  getRelayUrl(): string {
+    return this.pairingService.getRelayUrl();
+  }
+
+  /**
+   * Set custom relay URL (takes effect on next restart)
+   */
+  setCustomRelayUrl(url: string | null): void {
+    const relayUrl = url || 'wss://audiio-relay.fly.dev';
+    this.pairingService.setRelayUrl(relayUrl);
+    this.p2pManager.setRelayUrl(relayUrl);
+    console.log(`[Mobile] Custom relay URL set to: ${relayUrl}`);
+  }
+
+  /**
+   * Get local URL
+   */
+  getLocalUrl(): string | null {
+    return this.pairingService.getLocalUrl();
+  }
+
+  private async handleWebSocketMessage(socket: WebSocket, sessionId: string, data: { type: string; payload?: unknown }) {
+    const orchestrators = this.options.orchestrators;
+
     switch (data.type) {
       case 'ping':
         socket.send(JSON.stringify({ type: 'pong', payload: Date.now() }));
         this.sessionManager.updateActivity(sessionId);
         break;
+
       case 'playback-sync':
         // Broadcast to other sessions
         this.broadcastToOthers(sessionId, data);
         break;
+
+      case 'remote-command':
+        // Handle remote playback commands from mobile
+        if (!orchestrators?.playback) {
+          console.warn('[Mobile] Remote command received but playback orchestrator not available');
+          break;
+        }
+
+        const payload = data.payload as { command: string; track?: any; position?: number; volume?: number; index?: number };
+        console.log('[Mobile] Remote command:', payload.command);
+
+        try {
+          switch (payload.command) {
+            case 'play':
+              if (payload.track) {
+                await orchestrators.playback.play(payload.track);
+              }
+              break;
+            case 'pause':
+              orchestrators.playback.pause?.();
+              break;
+            case 'resume':
+              orchestrators.playback.resume?.();
+              break;
+            case 'seek':
+              if (typeof payload.position === 'number') {
+                orchestrators.playback.seek?.(payload.position);
+              }
+              break;
+            case 'next':
+              orchestrators.playback.next?.();
+              break;
+            case 'previous':
+              orchestrators.playback.previous?.();
+              break;
+            case 'volume':
+              if (typeof payload.volume === 'number') {
+                orchestrators.playback.setVolume?.(payload.volume);
+              }
+              break;
+            case 'toggleShuffle':
+              orchestrators.playback.toggleShuffle?.();
+              break;
+            case 'toggleRepeat':
+              orchestrators.playback.toggleRepeat?.();
+              break;
+            case 'playFromQueue':
+              if (typeof payload.index === 'number') {
+                orchestrators.playback.playFromQueue?.(payload.index);
+              }
+              break;
+            case 'addToQueue':
+              if (payload.track) {
+                orchestrators.playback.addToQueue?.(payload.track);
+              }
+              break;
+            case 'playNext':
+              if (payload.track) {
+                orchestrators.playback.playNext?.(payload.track);
+              }
+              break;
+            default:
+              console.warn('[Mobile] Unknown remote command:', payload.command);
+          }
+        } catch (error) {
+          console.error('[Mobile] Remote command error:', error);
+        }
+        break;
+
+      case 'request-desktop-state':
+        // Send current desktop playback state
+        if (orchestrators?.playback) {
+          const state = orchestrators.playback.getState?.();
+          if (state) {
+            socket.send(JSON.stringify({
+              type: 'desktop-state',
+              payload: state
+            }));
+          }
+        }
+        break;
+
       default:
         break;
     }
@@ -591,5 +937,6 @@ if (require.main === module) {
 }
 
 export { AccessManager, SessionManager };
+export { PairingService } from './services/pairing-service';
 export { P2PManager, type P2PPeer, type P2PConfig } from './services/p2p-manager';
 export { AuthManager } from './services/auth-manager';

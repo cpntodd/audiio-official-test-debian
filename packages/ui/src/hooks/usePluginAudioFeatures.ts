@@ -23,6 +23,12 @@ import type { AudioFeatures } from '../ml/advanced-scoring';
 // Audio features cache (persists across renders)
 const audioFeaturesCache = new Map<string, AudioFeatures>();
 
+// Client-side request deduplication - tracks in-flight requests
+const inFlightRequests = new Map<string, Promise<AudioFeatures | null>>();
+
+// Client-side failure cache - prevents repeated requests for tracks that failed
+const failedTrackIds = new Set<string>();
+
 /**
  * Plugin roles that can provide audio features
  * Metadata providers and scrobblers can provide features
@@ -47,34 +53,54 @@ function createMetadataFeatureProvider(pluginId: string, priority: number = 100)
         return cached;
       }
 
-      try {
-        // Call main process to get audio features
-        if (window.api?.getAudioFeatures) {
-          const features = await window.api.getAudioFeatures(trackId);
-          if (features) {
-            const normalized: AudioFeatures = {
-              bpm: features.tempo || features.bpm,
-              energy: features.energy,
-              danceability: features.danceability,
-              acousticness: features.acousticness,
-              instrumentalness: features.instrumentalness,
-              valence: features.valence,
-              loudness: features.loudness,
-              speechiness: features.speechiness,
-              key: features.key ? (typeof features.key === 'number' ? keyNumberToString(features.key, features.mode) : features.key) : undefined,
-              mode: typeof features.mode === 'number' ? (features.mode === 1 ? 'major' : 'minor') : features.mode
-            };
-
-            // Cache the result
-            audioFeaturesCache.set(trackId, normalized);
-            return normalized;
-          }
-        }
-      } catch (error) {
-        console.warn(`[${pluginId}] Failed to get audio features:`, error);
+      // Skip if already known to fail
+      if (failedTrackIds.has(trackId)) {
+        return null;
       }
 
-      return null;
+      // Check for in-flight request (deduplication)
+      const inFlight = inFlightRequests.get(trackId);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      // Create request promise
+      const requestPromise = (async (): Promise<AudioFeatures | null> => {
+        try {
+          if (window.api?.getAudioFeatures) {
+            const features = await window.api.getAudioFeatures(trackId);
+            if (features) {
+              const normalized: AudioFeatures = {
+                bpm: features.tempo || features.bpm,
+                energy: features.energy,
+                danceability: features.danceability,
+                acousticness: features.acousticness,
+                instrumentalness: features.instrumentalness,
+                valence: features.valence,
+                loudness: features.loudness,
+                speechiness: features.speechiness,
+                key: features.key ? (typeof features.key === 'number' ? keyNumberToString(features.key, features.mode) : features.key) : undefined,
+                mode: typeof features.mode === 'number' ? (features.mode === 1 ? 'major' : 'minor') : features.mode
+              };
+
+              audioFeaturesCache.set(trackId, normalized);
+              return normalized;
+            }
+          }
+          // No features available - mark as failed to prevent retry
+          failedTrackIds.add(trackId);
+          return null;
+        } catch (error) {
+          console.warn(`[${pluginId}] Failed to get audio features:`, error);
+          failedTrackIds.add(trackId);
+          return null;
+        } finally {
+          inFlightRequests.delete(trackId);
+        }
+      })();
+
+      inFlightRequests.set(trackId, requestPromise);
+      return requestPromise;
     },
 
     async getSimilarTracks(trackId: string, limit: number): Promise<string[]> {
@@ -144,34 +170,54 @@ function createLocalAnalysisProvider() {
         return cached;
       }
 
-      try {
-        // Try to get from the main process cache
-        if (window.api?.getAudioFeatures) {
-          const features = await window.api.getAudioFeatures(trackId);
-          if (features) {
-            const normalized: AudioFeatures = {
-              bpm: features.bpm,
-              energy: features.energy,
-              danceability: features.danceability,
-              acousticness: features.acousticness,
-              instrumentalness: features.instrumentalness,
-              valence: features.valence,
-              loudness: features.loudness,
-              speechiness: features.speechiness,
-              key: features.key,
-              mode: features.mode
-            };
-
-            // Cache the result
-            audioFeaturesCache.set(trackId, normalized);
-            return normalized;
-          }
-        }
-      } catch (error) {
-        console.warn('[LocalAnalysisProvider] Failed to get audio features:', error);
+      // Skip if already known to fail (handled by metadata provider)
+      if (failedTrackIds.has(trackId)) {
+        return null;
       }
 
-      return null;
+      // Check for in-flight request (deduplication)
+      const inFlight = inFlightRequests.get(trackId);
+      if (inFlight) {
+        return inFlight;
+      }
+
+      // Create request promise
+      const requestPromise = (async (): Promise<AudioFeatures | null> => {
+        try {
+          if (window.api?.getAudioFeatures) {
+            const features = await window.api.getAudioFeatures(trackId);
+            if (features) {
+              const normalized: AudioFeatures = {
+                bpm: features.bpm,
+                energy: features.energy,
+                danceability: features.danceability,
+                acousticness: features.acousticness,
+                instrumentalness: features.instrumentalness,
+                valence: features.valence,
+                loudness: features.loudness,
+                speechiness: features.speechiness,
+                key: features.key,
+                mode: features.mode
+              };
+
+              audioFeaturesCache.set(trackId, normalized);
+              return normalized;
+            }
+          }
+          // No features - mark as failed
+          failedTrackIds.add(trackId);
+          return null;
+        } catch (error) {
+          console.warn('[LocalAnalysisProvider] Failed to get audio features:', error);
+          failedTrackIds.add(trackId);
+          return null;
+        } finally {
+          inFlightRequests.delete(trackId);
+        }
+      })();
+
+      inFlightRequests.set(trackId, requestPromise);
+      return requestPromise;
     },
 
     async getSimilarTracks(_trackId: string, _limit: number): Promise<string[]> {
@@ -281,10 +327,12 @@ export function getCachedAudioFeatures(trackId: string): AudioFeatures | null {
 /**
  * Trigger audio analysis for a track during playback
  * Call this when a track starts playing to analyze in background
+ * Pass the full track object to enable stream resolution via plugins
  */
 export async function triggerAudioAnalysis(
   trackId: string,
-  streamUrl?: string
+  streamUrl?: string,
+  track?: unknown
 ): Promise<AudioFeatures | null> {
   // Check cache first
   const cached = audioFeaturesCache.get(trackId);
@@ -294,7 +342,8 @@ export async function triggerAudioAnalysis(
 
   try {
     if (window.api?.getAudioFeatures) {
-      const features = await window.api.getAudioFeatures(trackId, streamUrl);
+      // Pass track object to enable stream resolution via plugins
+      const features = await window.api.getAudioFeatures(trackId, streamUrl, track);
       if (features) {
         audioFeaturesCache.set(trackId, features);
         console.log(`[AudioAnalysis] Analyzed track ${trackId}:`, {
@@ -313,10 +362,12 @@ export async function triggerAudioAnalysis(
 }
 
 /**
- * Clear the audio features cache
+ * Clear the audio features cache and allow retry of failed tracks
  */
 export function clearAudioFeaturesCache(): void {
   audioFeaturesCache.clear();
+  failedTrackIds.clear();
+  inFlightRequests.clear();
 }
 
 /**

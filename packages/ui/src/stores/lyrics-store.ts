@@ -35,6 +35,8 @@ export interface LineWithWords extends LyricLine {
   words: WordTiming[];
 }
 
+export type LyricsViewMode = 'synced' | 'plain';
+
 interface LyricsState {
   // State
   lyrics: LyricLine[] | null;
@@ -49,6 +51,9 @@ interface LyricsState {
   // Lyrics format info
   lyricsFormat: LyricsFormat | null;
   hasNativeWordTiming: boolean; // True if ELRC with syllable-level timing
+
+  // View mode - synced (with highlighting) or plain (static text)
+  viewMode: LyricsViewMode;
 
   // Sing-along mode state
   singAlongEnabled: boolean;
@@ -65,6 +70,10 @@ interface LyricsState {
   adjustOffset: (delta: number) => void;
   resetOffset: () => void;
 
+  // View mode actions
+  setViewMode: (mode: LyricsViewMode) => void;
+  toggleViewMode: () => void;
+
   // Sing-along actions
   setSingAlongEnabled: (enabled: boolean) => void;
   updateCurrentWord: (positionMs: number) => void;
@@ -77,24 +86,46 @@ interface LyricsState {
 
 /**
  * Binary search to find the current word index within a line
+ * O(log n) complexity for smooth 60fps updates
  */
 function findCurrentWordIndex(words: WordTiming[], positionMs: number): number {
   if (words.length === 0) return -1;
 
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    if (word && positionMs >= word.startTime && positionMs < word.endTime) {
-      return i;
+  // Quick bounds check
+  const firstWord = words[0];
+  const lastWord = words[words.length - 1];
+
+  if (!firstWord || !lastWord) return -1;
+  if (positionMs < firstWord.startTime) return -1;
+  if (positionMs >= lastWord.endTime) return words.length - 1;
+
+  // Binary search for the word containing positionMs
+  let left = 0;
+  let right = words.length - 1;
+
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    const word = words[mid];
+
+    if (!word) {
+      right = mid - 1;
+      continue;
+    }
+
+    if (positionMs >= word.startTime && positionMs < word.endTime) {
+      // Found the active word
+      return mid;
+    } else if (positionMs < word.startTime) {
+      right = mid - 1;
+    } else {
+      // positionMs >= word.endTime
+      left = mid + 1;
     }
   }
 
-  // If past all words, return last word
-  const lastWord = words[words.length - 1];
-  if (lastWord && positionMs >= lastWord.endTime) {
-    return words.length - 1;
-  }
-
-  return -1;
+  // Position is in a gap between words - return the previous word
+  // This handles the case where position is between word.endTime and next word.startTime
+  return left > 0 ? left - 1 : -1;
 }
 
 /**
@@ -135,6 +166,9 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
   // Lyrics format info
   lyricsFormat: null,
   hasNativeWordTiming: false,
+
+  // View mode - default to synced (with highlighting)
+  viewMode: 'synced' as LyricsViewMode,
 
   // Sing-along mode state
   singAlongEnabled: false,
@@ -357,8 +391,31 @@ export const useLyricsStore = create<LyricsState>((set, get) => ({
     set({ offset: 0 });
   },
 
+  // View mode actions
+  setViewMode: (mode) => {
+    set({ viewMode: mode });
+    // Disable sing-along when switching to plain mode
+    if (mode === 'plain') {
+      set({ singAlongEnabled: false });
+    }
+  },
+
+  toggleViewMode: () => {
+    const currentMode = get().viewMode;
+    const newMode = currentMode === 'synced' ? 'plain' : 'synced';
+    set({ viewMode: newMode });
+    // Disable sing-along when switching to plain mode
+    if (newMode === 'plain') {
+      set({ singAlongEnabled: false });
+    }
+  },
+
   // Sing-along actions
   setSingAlongEnabled: (enabled) => {
+    // Only allow sing-along in synced mode
+    if (enabled && get().viewMode === 'plain') {
+      return;
+    }
     set({ singAlongEnabled: enabled });
   },
 

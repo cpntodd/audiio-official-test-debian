@@ -23,16 +23,19 @@ import {
   RepeatIcon,
   RepeatOneIcon,
   QueueIcon,
-  LyricsIcon
+  LyricsIcon,
+  CloseIcon
 } from '@audiio/icons';
 import { useKaraoke } from '../../hooks/useKaraoke';
 import { useKaraokeAudio } from '../../hooks/useKaraokeAudio';
+import { useArtwork } from '../../hooks/useArtwork';
 
 export const Player: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const playPromiseRef = useRef<Promise<void> | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const {
+    // Audio state
     currentTrack,
     isPlaying,
     position,
@@ -52,8 +55,26 @@ export const Player: React.FC = () => {
     setPosition,
     setIsPlaying,
     toggleShuffle,
-    cycleRepeat
+    cycleRepeat,
+    // Video state
+    videoMode,
+    currentVideo,
+    isVideoPlaying,
+    videoPosition,
+    videoDuration,
+    isVideoLoading,
+    setVideoPlaying,
+    closeVideo
   } = usePlayerStore();
+
+  // Determine if video is active (takes priority over audio)
+  const isVideoActive = videoMode !== 'off' && currentVideo !== null;
+
+  // Unified state - use video state when video is active
+  const unifiedIsPlaying = isVideoActive ? isVideoPlaying : isPlaying;
+  const unifiedPosition = isVideoActive ? videoPosition * 1000 : position; // video is in seconds, audio in ms
+  const unifiedDuration = isVideoActive ? videoDuration * 1000 : duration;
+  const unifiedIsLoading = isVideoActive ? isVideoLoading : isLoading;
 
   const { isQueueOpen, toggleQueue, expandPlayer, isLyricsPanelOpen, toggleLyricsPanel } = useUIStore();
   const { recordListen } = useRecommendationStore();
@@ -72,6 +93,15 @@ export const Player: React.FC = () => {
     instrumentalUrl,
     isEnabled: karaokeEnabled && !!instrumentalUrl
   });
+
+  // Resolve artwork (handles embedded artwork from local files)
+  const { artworkUrl } = useArtwork(currentTrack);
+  const [artworkError, setArtworkError] = useState(false);
+
+  // Reset artwork error when track changes
+  useEffect(() => {
+    setArtworkError(false);
+  }, [currentTrack?.id]);
 
   // Capture audio element ref after mount
   const audioRefCallback = useCallback((node: HTMLAudioElement | null) => {
@@ -217,6 +247,20 @@ export const Player: React.FC = () => {
     console.error('Audio playback error');
   }, [setIsPlaying]);
 
+  // Unified seek handler (for progress bar) - defined before updateProgress which uses it
+  const handleUnifiedSeek = useCallback((newPositionMs: number) => {
+    if (isVideoActive) {
+      // Video position is in seconds, we receive ms
+      // Dispatch event to sync with VideoPlayerModal
+      window.dispatchEvent(new CustomEvent('audiio:video-seek', { detail: { position: newPositionMs / 1000 } }));
+    } else {
+      seek(newPositionMs);
+      if (audioRef.current) {
+        audioRef.current.currentTime = newPositionMs / 1000;
+      }
+    }
+  }, [isVideoActive, seek]);
+
   // Progress bar dragging
   const progressBarRef = useRef<HTMLDivElement>(null);
   const isDraggingProgress = useRef(false);
@@ -225,12 +269,9 @@ export const Player: React.FC = () => {
     if (!progressBarRef.current) return;
     const rect = progressBarRef.current.getBoundingClientRect();
     const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const newPosition = percent * duration;
-    seek(newPosition);
-    if (audioRef.current) {
-      audioRef.current.currentTime = newPosition / 1000;
-    }
-  }, [duration, seek]);
+    const newPosition = percent * unifiedDuration;
+    handleUnifiedSeek(newPosition);
+  }, [unifiedDuration, handleUnifiedSeek]);
 
   const handleProgressMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     isDraggingProgress.current = true;
@@ -291,7 +332,21 @@ export const Player: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const progressPercent = duration > 0 ? (position / duration) * 100 : 0;
+  // Unified progress using video or audio based on what's active
+  const progressPercent = unifiedDuration > 0 ? (unifiedPosition / unifiedDuration) * 100 : 0;
+
+  // Unified play/pause handler
+  const handlePlayPause = useCallback(() => {
+    if (isVideoActive) {
+      setVideoPlaying(!isVideoPlaying);
+    } else {
+      if (isPlaying) {
+        pause();
+      } else {
+        resume();
+      }
+    }
+  }, [isVideoActive, isVideoPlaying, isPlaying, setVideoPlaying, pause, resume]);
 
   const { isLiked, toggleLike } = useLibraryStore();
   const trackIsLiked = currentTrack ? isLiked(currentTrack.id) : false;
@@ -337,7 +392,8 @@ export const Player: React.FC = () => {
 
   const VolumeIcon = isMuted || volume === 0 ? VolumeMuteIcon : volume < 0.5 ? VolumeLowIcon : VolumeHighIcon;
 
-  if (!currentTrack) {
+  // Show player if we have either a track or an active video
+  if (!currentTrack && !isVideoActive) {
     return (
       <div className="player">
         <div className="player-empty">
@@ -348,8 +404,12 @@ export const Player: React.FC = () => {
     );
   }
 
-  const artworkUrl = currentTrack.artwork?.medium ?? currentTrack.album?.artwork?.medium;
-  const artistNames = currentTrack.artists.map(a => a.name).join(', ');
+  const artistNames = currentTrack?.artists.map(a => a.name).join(', ') || '';
+
+  // Display info - video title when video is active, track title otherwise
+  const displayTitle = isVideoActive ? currentVideo?.title : currentTrack?.title;
+  const displayArtist = isVideoActive ? 'Video' : artistNames;
+  const displayArtwork = isVideoActive ? currentVideo?.thumbnail : artworkUrl;
 
   return (
     <div className="player">
@@ -363,14 +423,19 @@ export const Player: React.FC = () => {
 
       {/* Track Info */}
       <div
-        className="player-track"
-        onClick={expandPlayer}
-        onContextMenu={(e) => showContextMenu(e, currentTrack)}
+        className={`player-track ${isVideoActive ? 'video-active' : ''}`}
+        onClick={isVideoActive ? undefined : expandPlayer}
+        onContextMenu={currentTrack ? (e) => showContextMenu(e, currentTrack) : undefined}
         role="button"
         tabIndex={0}
       >
-        {artworkUrl ? (
-          <img className="player-artwork" src={artworkUrl} alt={currentTrack.title} />
+        {displayArtwork && !artworkError ? (
+          <img
+            className="player-artwork"
+            src={displayArtwork}
+            alt={displayTitle || 'Now playing'}
+            onError={() => setArtworkError(true)}
+          />
         ) : (
           <div className="player-artwork player-artwork-placeholder">
             <MusicNoteIcon size={24} />
@@ -378,84 +443,101 @@ export const Player: React.FC = () => {
         )}
         <div className="player-track-info">
           <div
-            className={`player-track-title ${currentTrack.album ? 'clickable' : ''}`}
-            onClick={currentTrack.album ? handleGoToAlbum : undefined}
-            title={currentTrack.album ? `Go to ${currentTrack.album.title}` : undefined}
+            className={`player-track-title ${!isVideoActive && currentTrack?.album ? 'clickable' : ''}`}
+            onClick={!isVideoActive && currentTrack?.album ? handleGoToAlbum : undefined}
+            title={!isVideoActive && currentTrack?.album ? `Go to ${currentTrack.album.title}` : undefined}
           >
-            {currentTrack.title}
+            {displayTitle}
           </div>
           <div
-            className={`player-track-artist ${currentTrack.artists.length > 0 ? 'clickable' : ''}`}
-            onClick={currentTrack.artists.length > 0 ? handleGoToArtist : undefined}
-            title={currentTrack.artists.length > 0 ? `Go to ${currentTrack.artists[0].name}` : undefined}
+            className={`player-track-artist ${!isVideoActive && currentTrack && currentTrack.artists.length > 0 ? 'clickable' : ''}`}
+            onClick={!isVideoActive && currentTrack && currentTrack.artists.length > 0 ? handleGoToArtist : undefined}
+            title={!isVideoActive && currentTrack?.artists?.[0] ? `Go to ${currentTrack.artists[0].name}` : undefined}
           >
-            {artistNames}
+            {displayArtist}
           </div>
         </div>
-        <button
-          className={`player-like-button ${trackIsLiked ? 'liked' : ''}`}
-          onClick={(e) => { e.stopPropagation(); toggleLike(currentTrack); }}
-          title={trackIsLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
-        >
-          {trackIsLiked ? <HeartIcon size={18} /> : <HeartOutlineIcon size={18} />}
-        </button>
-        <button
-          className="player-dislike-button"
-          onClick={(e) => { e.stopPropagation(); handleNotForMe(); }}
-          title="Not for me"
-        >
-          <ThumbDownIcon size={18} />
-        </button>
+        {!isVideoActive && currentTrack && (
+          <>
+            <button
+              className={`player-like-button ${trackIsLiked ? 'liked' : ''}`}
+              onClick={(e) => { e.stopPropagation(); toggleLike(currentTrack); }}
+              title={trackIsLiked ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+            >
+              {trackIsLiked ? <HeartIcon size={18} /> : <HeartOutlineIcon size={18} />}
+            </button>
+            <button
+              className="player-dislike-button"
+              onClick={(e) => { e.stopPropagation(); handleNotForMe(); }}
+              title="Not for me"
+            >
+              <ThumbDownIcon size={18} />
+            </button>
+          </>
+        )}
       </div>
 
       {/* Controls */}
       <div className="player-controls">
         <div className="player-buttons">
-          <button
-            className={`player-button small ${shuffle ? 'active' : ''}`}
-            onClick={toggleShuffle}
-            title={shuffle ? 'Disable shuffle' : 'Enable shuffle'}
-          >
-            <ShuffleIcon size={18} />
-          </button>
-          <button className="player-button" onClick={previous} title="Previous">
+          {!isVideoActive && (
+            <button
+              className={`player-button small ${shuffle ? 'active' : ''}`}
+              onClick={toggleShuffle}
+              title={shuffle ? 'Disable shuffle' : 'Enable shuffle'}
+            >
+              <ShuffleIcon size={18} />
+            </button>
+          )}
+          {isVideoActive && (
+            <button
+              className="player-button small"
+              onClick={closeVideo}
+              title="Close video"
+            >
+              <CloseIcon size={18} />
+            </button>
+          )}
+          <button className="player-button" onClick={isVideoActive ? undefined : previous} disabled={isVideoActive} title="Previous">
             <PrevIcon size={20} />
           </button>
           <button
             className="player-button play"
-            onClick={isPlaying ? pause : resume}
-            disabled={isLoading}
-            title={isPlaying ? 'Pause' : 'Play'}
+            onClick={handlePlayPause}
+            disabled={unifiedIsLoading}
+            title={unifiedIsPlaying ? 'Pause' : 'Play'}
           >
-            {isLoading ? (
+            {unifiedIsLoading ? (
               <span className="player-loading" />
-            ) : isPlaying ? (
+            ) : unifiedIsPlaying ? (
               <PauseIcon size={24} />
             ) : (
               <PlayIcon size={24} />
             )}
           </button>
-          <button className="player-button" onClick={next} title="Next">
+          <button className="player-button" onClick={isVideoActive ? undefined : next} disabled={isVideoActive} title="Next">
             <NextIcon size={20} />
           </button>
-          <button
-            className={`player-button small ${repeat !== 'off' ? 'active' : ''}`}
-            onClick={cycleRepeat}
-            title={repeat === 'off' ? 'Enable repeat' : repeat === 'all' ? 'Repeat one' : 'Disable repeat'}
-          >
-            {repeat === 'one' ? <RepeatOneIcon size={18} /> : <RepeatIcon size={18} />}
-          </button>
+          {!isVideoActive && (
+            <button
+              className={`player-button small ${repeat !== 'off' ? 'active' : ''}`}
+              onClick={cycleRepeat}
+              title={repeat === 'off' ? 'Enable repeat' : repeat === 'all' ? 'Repeat one' : 'Disable repeat'}
+            >
+              {repeat === 'one' ? <RepeatOneIcon size={18} /> : <RepeatIcon size={18} />}
+            </button>
+          )}
         </div>
 
         <div className="progress-container">
-          <span className="progress-time">{formatTime(position)}</span>
+          <span className="progress-time">{formatTime(unifiedPosition)}</span>
           <div className="progress-bar" ref={progressBarRef} onMouseDown={handleProgressMouseDown}>
             <div
               className="progress-bar-fill"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
-          <span className="progress-time">{formatTime(duration)}</span>
+          <span className="progress-time">{formatTime(unifiedDuration)}</span>
         </div>
       </div>
 

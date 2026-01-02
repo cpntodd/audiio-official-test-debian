@@ -25,7 +25,6 @@ import {
   GallerySection,
   MerchandiseSection
 } from './sections';
-import { VideoPlayerModal } from '../Modals/VideoPlayerModal';
 import type { UnifiedTrack, MusicVideo } from '@audiio/core';
 import type { SearchAlbum } from '../../stores/search-store';
 
@@ -133,7 +132,7 @@ const SimilarArtistCard: React.FC<{
 
 export const ArtistDetailView: React.FC = () => {
   const { selectedArtistId, selectedArtistData, goBack, openAlbum, openArtist } = useNavigationStore();
-  const { play, setQueue, currentTrack } = usePlayerStore();
+  const { play, setQueue, currentTrack, playVideo } = usePlayerStore();
   const { likedTracks } = useLibraryStore();
   const { startRadio } = useSmartQueueStore();
   const { fetchArtist, getArtist, loadingArtistId, error } = useArtistStore();
@@ -142,7 +141,6 @@ export const ArtistDetailView: React.FC = () => {
 
   const [colors, setColors] = useState<ExtractedColors>(getDefaultColors());
   const [activeTab, setActiveTab] = useState<DiscographyTab>('albums');
-  const [activeVideo, setActiveVideo] = useState<MusicVideo | null>(null);
   const discographyScrollRef = useRef<HTMLDivElement>(null);
   const similarArtistsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -244,8 +242,8 @@ export const ArtistDetailView: React.FC = () => {
   };
 
   const handleVideoClick = (video: MusicVideo) => {
-    // Open video in modal player
-    setActiveVideo(video);
+    // Open video in floating player
+    playVideo(video);
   };
 
   const formatDuration = (seconds?: number): string => {
@@ -773,12 +771,6 @@ export const ArtistDetailView: React.FC = () => {
           </section>
         )}
       </div>
-
-      {/* Video Player Modal */}
-      <VideoPlayerModal
-        video={activeVideo}
-        onClose={() => setActiveVideo(null)}
-      />
     </div>
   );
 };

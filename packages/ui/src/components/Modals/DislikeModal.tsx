@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { UnifiedTrack } from '@audiio/core';
 import {
   useRecommendationStore,
   DISLIKE_REASONS,
-  type DislikeReason
+  DISLIKE_CATEGORIES,
+  type DislikeReason,
+  type DislikeCategory
 } from '../../stores/recommendation-store';
 import { useLibraryStore } from '../../stores/library-store';
 import { CloseIcon, MusicNoteIcon } from '@audiio/icons';
@@ -17,6 +19,17 @@ export const DislikeModal: React.FC<DislikeModalProps> = ({ track, onClose }) =>
   const [selectedReasons, setSelectedReasons] = useState<DislikeReason[]>([]);
   const { recordDislike } = useRecommendationStore();
   const { dislikeTrack } = useLibraryStore();
+
+  // Group reasons by category
+  const reasonsByCategory = useMemo(() => {
+    const grouped = new Map<DislikeCategory, typeof DISLIKE_REASONS>();
+    for (const reason of DISLIKE_REASONS) {
+      const existing = grouped.get(reason.category) || [];
+      existing.push(reason);
+      grouped.set(reason.category, existing);
+    }
+    return grouped;
+  }, []);
 
   const toggleReason = (reason: DislikeReason) => {
     setSelectedReasons(prev =>
@@ -44,6 +57,9 @@ export const DislikeModal: React.FC<DislikeModalProps> = ({ track, onClose }) =>
   const artworkUrl = track.artwork?.medium ?? track.album?.artwork?.medium;
   const artistNames = track.artists.map(a => a.name).join(', ');
 
+  // Order categories for display
+  const categoryOrder: DislikeCategory[] = ['track', 'artist', 'mood', 'quality', 'content'];
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="dislike-modal" onClick={e => e.stopPropagation()}>
@@ -70,19 +86,32 @@ export const DislikeModal: React.FC<DislikeModalProps> = ({ track, onClose }) =>
 
         <div className="dislike-modal-content">
           <p className="dislike-modal-prompt">
-            Help us understand why so we can improve your recommendations:
+            Tell us why to improve your recommendations:
           </p>
 
-          <div className="dislike-reasons-grid">
-            {DISLIKE_REASONS.map(({ value, label }) => (
-              <button
-                key={value}
-                className={`dislike-reason-button ${selectedReasons.includes(value) ? 'selected' : ''}`}
-                onClick={() => toggleReason(value)}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="dislike-categories">
+            {categoryOrder.map(category => {
+              const reasons = reasonsByCategory.get(category);
+              if (!reasons?.length) return null;
+
+              return (
+                <div key={category} className="dislike-category">
+                  <h4 className="dislike-category-title">{DISLIKE_CATEGORIES[category]}</h4>
+                  <div className="dislike-category-reasons">
+                    {reasons.map(({ value, label, description }) => (
+                      <button
+                        key={value}
+                        className={`dislike-reason-chip ${selectedReasons.includes(value) ? 'selected' : ''}`}
+                        onClick={() => toggleReason(value)}
+                        title={description}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -95,7 +124,7 @@ export const DislikeModal: React.FC<DislikeModalProps> = ({ track, onClose }) =>
             onClick={handleSubmit}
             disabled={selectedReasons.length === 0}
           >
-            Submit Feedback
+            Submit{selectedReasons.length > 0 ? ` (${selectedReasons.length})` : ''}
           </button>
         </footer>
       </div>

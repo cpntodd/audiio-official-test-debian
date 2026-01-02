@@ -15,27 +15,80 @@ import { useStatsStore } from './stats-store';
 // ============================================
 
 export type DislikeReason =
+  // Track-specific
   | 'not_my_taste'
   | 'heard_too_much'
-  | 'bad_audio_quality'
-  | 'wrong_mood'
+  | 'wrong_version'
+  | 'too_repetitive'
+  // Artist-specific
   | 'dont_like_artist'
+  | 'skip_artist'
+  // Mood/Context
+  | 'wrong_mood'
+  | 'too_intense'
+  | 'too_mellow'
+  | 'bad_recommendation'
+  // Technical/Quality
+  | 'bad_audio_quality'
+  | 'wrong_tempo'
+  // Duration
   | 'too_long'
   | 'too_short'
+  // Content
   | 'explicit_content'
+  | 'offensive_content'
+  // Other
   | 'other';
 
-export const DISLIKE_REASONS: { value: DislikeReason; label: string }[] = [
-  { value: 'not_my_taste', label: "Not my taste" },
-  { value: 'heard_too_much', label: "Heard it too much" },
-  { value: 'bad_audio_quality', label: "Bad audio quality" },
-  { value: 'wrong_mood', label: "Wrong mood/vibe" },
-  { value: 'dont_like_artist', label: "Don't like this artist" },
-  { value: 'too_long', label: "Too long" },
-  { value: 'too_short', label: "Too short" },
-  { value: 'explicit_content', label: "Explicit content" },
-  { value: 'other', label: "Other reason" },
+export type DislikeCategory = 'track' | 'artist' | 'mood' | 'quality' | 'content';
+
+export interface DislikeReasonOption {
+  value: DislikeReason;
+  label: string;
+  category: DislikeCategory;
+  description?: string;
+  mlWeight?: number; // How strongly this impacts ML (0-1, default 1)
+}
+
+export const DISLIKE_REASONS: DislikeReasonOption[] = [
+  // Track-specific (most common)
+  { value: 'not_my_taste', label: "Not for me", category: 'track', description: "Just not my style" },
+  { value: 'heard_too_much', label: "Overplayed", category: 'track', description: "I've heard this too many times" },
+  { value: 'too_repetitive', label: "Too repetitive", category: 'track', description: "Gets boring/monotonous" },
+  { value: 'wrong_version', label: "Wrong version", category: 'track', description: "Prefer a different mix/remix" },
+
+  // Artist-specific
+  { value: 'dont_like_artist', label: "Not this artist", category: 'artist', description: "Don't enjoy this artist", mlWeight: 0.8 },
+  { value: 'skip_artist', label: "Hide this artist", category: 'artist', description: "Never show me this artist", mlWeight: 1.0 },
+
+  // Mood/Context
+  { value: 'wrong_mood', label: "Wrong vibe", category: 'mood', description: "Doesn't fit my current mood" },
+  { value: 'too_intense', label: "Too intense", category: 'mood', description: "Too energetic/heavy right now" },
+  { value: 'too_mellow', label: "Too mellow", category: 'mood', description: "Too slow/calm right now" },
+  { value: 'bad_recommendation', label: "Bad suggestion", category: 'mood', description: "Doesn't match what I'm listening to", mlWeight: 0.6 },
+
+  // Quality/Technical
+  { value: 'bad_audio_quality', label: "Bad quality", category: 'quality', description: "Audio sounds poor" },
+  { value: 'wrong_tempo', label: "Wrong tempo", category: 'quality', description: "Speed doesn't fit", mlWeight: 0.7 },
+  { value: 'too_long', label: "Too long", category: 'quality', mlWeight: 0.5 },
+  { value: 'too_short', label: "Too short", category: 'quality', mlWeight: 0.5 },
+
+  // Content
+  { value: 'explicit_content', label: "Explicit", category: 'content', description: "Contains explicit content" },
+  { value: 'offensive_content', label: "Offensive", category: 'content', description: "Content I find offensive" },
+
+  // Other
+  { value: 'other', label: "Other", category: 'track', description: "Some other reason" },
 ];
+
+// Category labels for grouping in UI
+export const DISLIKE_CATEGORIES: Record<DislikeCategory, string> = {
+  track: "This Track",
+  artist: "The Artist",
+  mood: "Current Mood",
+  quality: "Quality & Length",
+  content: "Content"
+};
 
 export interface ListenEvent {
   trackId: string;

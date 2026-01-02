@@ -162,8 +162,9 @@ const api = {
   },
 
   // Audio Analysis APIs
-  getAudioFeatures: (trackId: string, streamUrl?: string) => {
-    return ipcRenderer.invoke('get-audio-features', { trackId, streamUrl });
+  // Accepts optional track object for stream resolution via plugins
+  getAudioFeatures: (trackId: string, streamUrl?: string, track?: unknown) => {
+    return ipcRenderer.invoke('get-audio-features', { trackId, streamUrl, track });
   },
 
   analyzeAudioFile: (filePath: string, options?: unknown) => {
@@ -214,6 +215,10 @@ const api = {
 
   disableMobileAccess: () => {
     return ipcRenderer.invoke('disable-mobile-access');
+  },
+
+  refreshMobilePairingCode: () => {
+    return ipcRenderer.invoke('refresh-mobile-pairing-code');
   },
 
   setMobileRemoteAccess: (enable: boolean) => {

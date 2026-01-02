@@ -6,6 +6,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { usePlayerStore } from '../stores/player-store';
 import { useRecommendationStore } from '../stores/recommendation-store';
+import { useStatsStore } from '../stores/stats-store';
 
 // Threshold for considering a track "completed" (80%)
 const COMPLETION_THRESHOLD = 0.80;
@@ -32,7 +33,8 @@ export function useSkipTracking(options: SkipTrackingOptions = {}): void {
     isPlaying,
   } = usePlayerStore();
 
-  const { recordSkip } = useRecommendationStore();
+  const { recordSkip: recordSkipToRecommendations } = useRecommendationStore();
+  const { recordSkip: recordSkipToStats } = useStatsStore();
 
   // Track previous state to detect changes
   const prevTrackRef = useRef<{
@@ -40,11 +42,12 @@ export function useSkipTracking(options: SkipTrackingOptions = {}): void {
     position: number;
     duration: number;
     wasPlaying: boolean;
+    track: typeof currentTrack;
   } | null>(null);
 
   // Record skip event
   const handleSkip = useCallback((
-    trackId: string,
+    track: NonNullable<typeof currentTrack>,
     skipPosition: number,
     skipDuration: number
   ) => {
@@ -58,33 +61,38 @@ export function useSkipTracking(options: SkipTrackingOptions = {}): void {
     if (skipPercentage >= COMPLETION_THRESHOLD) return;
 
     const earlySkip = skipPercentage < 0.25; // Less than 25%
+    const skipPositionSeconds = Math.floor(skipPosition / 1000);
+    const skipDurationSeconds = Math.floor(skipDuration / 1000);
 
     // Record to recommendation store
-    recordSkip(trackId, {
-      skipPosition: Math.floor(skipPosition / 1000), // Convert to seconds
+    recordSkipToRecommendations(track.id, {
+      skipPosition: skipPositionSeconds,
       skipPercentage,
       earlySkip,
     });
 
+    // Record to stats store
+    recordSkipToStats(track, skipPositionSeconds, skipDurationSeconds);
+
     // Call optional callback
-    onSkip?.(trackId, skipPercentage, earlySkip);
+    onSkip?.(track.id, skipPercentage, earlySkip);
 
     console.debug('[SkipTracking] Recorded skip:', {
-      trackId,
+      trackId: track.id,
       skipPercentage: `${(skipPercentage * 100).toFixed(1)}%`,
       earlySkip,
     });
-  }, [enabled, recordSkip, onSkip]);
+  }, [enabled, recordSkipToRecommendations, recordSkipToStats, onSkip]);
 
   // Detect track changes
   useEffect(() => {
     const prev = prevTrackRef.current;
 
     // Track changed
-    if (prev && currentTrack && prev.id !== currentTrack.id) {
+    if (prev && prev.track && currentTrack && prev.id !== currentTrack.id) {
       // Previous track was playing and wasn't completed
       if (prev.wasPlaying && prev.duration > 0) {
-        handleSkip(prev.id, prev.position, prev.duration);
+        handleSkip(prev.track, prev.position, prev.duration);
       }
     }
 
@@ -95,6 +103,7 @@ export function useSkipTracking(options: SkipTrackingOptions = {}): void {
         position,
         duration,
         wasPlaying: isPlaying,
+        track: currentTrack,
       };
     } else {
       prevTrackRef.current = null;

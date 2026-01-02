@@ -20,6 +20,7 @@ import { QueuePopover } from './components/Queue/QueuePopover';
 import { Player } from './components/Player/Player';
 import { FullPlayer } from './components/Player/FullPlayer';
 import { LyricsPanel } from './components/Player/LyricsPanel';
+import { VideoPlayerModal } from './components/Modals/VideoPlayerModal';
 import { AddToPlaylistModal } from './components/Modals/AddToPlaylistModal';
 import { DislikeModal } from './components/Modals/DislikeModal';
 import { ToastContainer } from './components/common/Toast';
@@ -258,6 +259,7 @@ export const App: React.FC = () => {
           <QueuePopover />
           <LyricsPanel />
           <FullPlayer />
+          <VideoPlayerModal />
         </div>
         {addToPlaylistTrack && (
           <AddToPlaylistModal

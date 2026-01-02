@@ -4,9 +4,11 @@
  * Core ML engine and orchestrator for Audiio.
  *
  * This package provides:
+ * - Core Algorithm (HybridScorer, NeuralScorer, Trainer, RadioGenerator)
+ * - Core Providers (Essentia, Emotion, Embedding, Lyrics, Fingerprint)
  * - ML Engine for orchestrating algorithm plugins
  * - Algorithm Registry for managing plugins
- * - Feature Aggregator for combining data from providers
+ * - Feature Aggregator for combining data from providers (with override/supplement modes)
  * - Smart Queue for intelligent playback
  * - Event recording and preference learning
  * - Training scheduler for automatic model updates
@@ -17,10 +19,7 @@
  *
  * const engine = getMLEngine();
  *
- * // Register an algorithm plugin
- * await engine.registerAlgorithm(myAlgorithmPlugin);
- *
- * // Initialize
+ * // Initialize (uses built-in core algorithm)
  * await engine.initialize();
  *
  * // Score tracks
@@ -28,6 +27,9 @@
  *
  * // Get next tracks for queue
  * const nextTracks = await engine.getNextTracks(10, context);
+ *
+ * // Register a plugin provider (override or supplement mode)
+ * engine.registerFeatureProvider(myProvider, 'supplement');
  *
  * // Record user events
  * await engine.recordEvent({
@@ -46,6 +48,45 @@ export type { MLEngineConfig } from './engine';
 
 export { AlgorithmRegistry } from './engine/algorithm-registry';
 export { FeatureAggregator } from './engine/feature-aggregator';
+export type { ExtendedFeatureProvider, ExtendedAggregationConfig } from './engine/feature-aggregator';
+
+// Core Algorithm
+export { HybridScorer } from './algorithm/hybrid-scorer';
+export { NeuralScorer } from './algorithm/neural-scorer';
+export { Trainer } from './algorithm/trainer';
+export { RadioGenerator } from './algorithm/radio-generator';
+
+// Core Providers (browser-safe only)
+// Note: EssentiaProvider and FingerprintProvider require Node.js - import from '@audiio/ml-core/node'
+export { EmotionProvider } from './providers/emotion-provider';
+export { EmbeddingProvider } from './providers/embedding-provider';
+export { LyricsProvider } from './providers/lyrics-provider';
+
+// Features
+export {
+  extractTrackFeatures,
+  extractContextFeatures,
+  extractAllFeatures,
+  extractBatchFeatures,
+  initializeScalers,
+  getDefaultScalers,
+  getDefaultUserInteraction,
+  encodeGenres,
+  normalizeValue,
+  calculateTrackMood,
+  PRIMARY_GENRES,
+  TRACK_FEATURE_DIM,
+  CONTEXT_FEATURE_DIM,
+  TOTAL_FEATURE_DIM,
+  GENRE_ENERGY_MAP,
+} from './features/feature-extractor';
+export type {
+  FeatureScalers,
+  TrackFeatures,
+  ExtractedFeatures,
+  UserInteractionData,
+  PrimaryGenre,
+} from './features/feature-extractor';
 
 // Learning
 export { EventRecorder } from './learning/event-recorder';

@@ -196,6 +196,15 @@ export class RelayClient {
   }
 
   /**
+   * Set requested connection code (for persistent server identity)
+   * Must be called before connect() to request a specific code
+   */
+  setRequestedCode(code: ConnectionCode): void {
+    this.connectionCode = code;
+    console.log(`[RelayClient] Will request code: ${code}`);
+  }
+
+  /**
    * Get public key (for QR code)
    */
   getPublicKey(): string {

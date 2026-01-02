@@ -23,6 +23,7 @@ import {
   type TrainingProgress
 } from '../ml';
 import { useRecommendationStore } from './recommendation-store';
+import { useLibraryStore } from './library-store';
 
 // ============================================
 // Types
@@ -50,7 +51,7 @@ interface MLState {
 
   // Actions
   initializeModel: () => Promise<void>;
-  trainModel: (tracks: UnifiedTrack[]) => Promise<boolean>;
+  trainModel: (tracks?: UnifiedTrack[]) => Promise<boolean>;
   predictScore: (track: UnifiedTrack, hour?: number) => number;
   predictBatchScores: (tracks: UnifiedTrack[], hour?: number) => Map<string, number>;
   getHybridScore: (track: UnifiedTrack, hour?: number) => number;
@@ -110,7 +111,7 @@ export const useMLStore = create<MLState>()(
       /**
        * Train the model on available data
        */
-      trainModel: async (tracks: UnifiedTrack[]) => {
+      trainModel: async (tracks?: UnifiedTrack[]) => {
         const state = get();
 
         if (state.isTraining) {
@@ -131,16 +132,45 @@ export const useMLStore = create<MLState>()(
 
         console.log(`[MLStore] Training with ${listenHistory.length} listens + ${Object.keys(dislikedTracks).length} disliked tracks`);
 
+        // Get tracks from library store if not provided
+        let allTracks = tracks || [];
+        if (allTracks.length === 0) {
+          const libraryStore = useLibraryStore.getState();
+          // Combine liked tracks with playlist tracks
+          const likedTracks = libraryStore.likedTracks
+            .map(lt => lt?.track)
+            .filter((t): t is UnifiedTrack => t != null && t.id != null);
+          const playlistTracks = libraryStore.playlists
+            .flatMap(p => p.tracks || [])
+            .filter((t): t is UnifiedTrack => t != null && t.id != null);
+          // Also get tracks from disliked store (they have full track objects)
+          const dislikedTrackObjects = Object.values(dislikedTracks)
+            .map(dt => dt?.track)
+            .filter((t): t is UnifiedTrack => t != null && t.id != null);
+
+          allTracks = [...likedTracks, ...playlistTracks, ...dislikedTrackObjects];
+
+          // Deduplicate by ID
+          const seenIds = new Set<string>();
+          allTracks = allTracks.filter(t => {
+            if (!t?.id || seenIds.has(t.id)) return false;
+            seenIds.add(t.id);
+            return true;
+          });
+
+          console.log(`[MLStore] Using ${allTracks.length} tracks from library (${likedTracks.length} liked, ${playlistTracks.length} playlist, ${dislikedTrackObjects.length} disliked)`);
+        }
+
         // Update scalers if needed
         let scalers = state.featureScalers;
         if (!scalers) {
-          scalers = tracks.length > 0 ? initializeScalers(tracks) : getDefaultScalers();
+          scalers = allTracks.length > 0 ? initializeScalers(allTracks) : getDefaultScalers();
           set({ featureScalers: scalers });
         }
 
         // Build track map for training
         const trackMap = new Map<string, UnifiedTrack>();
-        for (const track of tracks) {
+        for (const track of allTracks) {
           trackMap.set(track.id, track);
         }
 
@@ -176,10 +206,11 @@ export const useMLStore = create<MLState>()(
           // Save model
           await trainer.saveModel();
 
+          const newVersion = state.modelVersion + 1;
           set({
             isModelLoaded: true,
             isTraining: false,
-            modelVersion: state.modelVersion + 1,
+            modelVersion: newVersion,
             lastTrainedAt: Date.now(),
             eventsAtLastTrain: listenHistory.length,
             trainingMetrics: metrics,
@@ -187,7 +218,7 @@ export const useMLStore = create<MLState>()(
             lastError: null
           });
 
-          console.log('[MLStore] Training complete:', metrics);
+          console.log(`[MLStore] ✅ Training complete! Model v${newVersion}, accuracy=${(metrics.accuracy * 100).toFixed(1)}%, loss=${metrics.loss.toFixed(4)}`);
           return true;
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Training failed';
@@ -356,11 +387,17 @@ export const useMLStore = create<MLState>()(
         const state = get();
 
         if (state.isTraining) {
+          console.log('[MLStore] checkAndTrain: Already training, skipping');
           return;
         }
 
         const recStore = useRecommendationStore.getState();
         const { listenHistory } = recStore;
+
+        const hoursSinceLastTrain = state.lastTrainedAt
+          ? Math.round((Date.now() - state.lastTrainedAt) / (1000 * 60 * 60))
+          : 'never';
+        const newEvents = listenHistory.length - state.eventsAtLastTrain;
 
         const needsTraining = shouldRetrain(
           state.lastTrainedAt,
@@ -369,8 +406,10 @@ export const useMLStore = create<MLState>()(
           state.modelVersion
         );
 
+        console.log(`[MLStore] checkAndTrain: version=${state.modelVersion}, lastTrained=${hoursSinceLastTrain}h ago, events=${listenHistory.length} (+${newEvents} new), needsTraining=${needsTraining}`);
+
         if (needsTraining) {
-          console.log('[MLStore] Training triggered');
+          console.log('[MLStore] 🚀 Auto-training triggered!');
           await state.trainModel(tracks);
         }
       },

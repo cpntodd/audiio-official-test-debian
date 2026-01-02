@@ -303,6 +303,14 @@
   color: var(--color-text-muted);
 }
 
+/* QR Hint */
+.qrHint {
+  margin-top: var(--spacing-lg);
+  font-size: 13px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
 /* Footer */
 .footer {
   display: flex;

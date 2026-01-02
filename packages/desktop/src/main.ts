@@ -15,7 +15,8 @@ import {
   MetadataOrchestrator,
   getAudioAnalyzer,
   type AudioFeatures,
-  type AnalysisOptions
+  type AnalysisOptions,
+  type UnifiedTrack
 } from '@audiio/core';
 import { getLibraryBridge, type LibraryBridge } from './services/library-bridge';
 import { PluginLoader } from './services/plugin-loader';
@@ -45,6 +46,7 @@ let AuthManager: any = null;
 let mobileServer: any = null;
 let mobileAuthManager: any = null;
 let mobileAccessConfig: any = null;
+let mobileDataPath: string | null = null;
 
 // Register local-audio as a privileged scheme for media playback
 protocol.registerSchemesAsPrivileged([
@@ -73,6 +75,16 @@ const audioAnalyzer = getAudioAnalyzer();
 
 // Audio features cache (persisted across sessions)
 const audioFeaturesCache = new Map<string, AudioFeatures>();
+
+// Audio analysis request tracking - prevents duplicate concurrent requests
+const audioAnalysisInFlight = new Map<string, Promise<AudioFeatures | null>>();
+
+// Tracks that failed resolution (no stream URL available) - prevents log spam
+const audioAnalysisFailedIds = new Set<string>();
+
+// Debounce timer for batch logging of failed IDs
+let failedIdsLogTimer: ReturnType<typeof setTimeout> | null = null;
+const pendingFailedIds: string[] = [];
 
 // Lyrics cache - LRU with TTL (reduces network calls)
 interface LyricsCacheEntry {
@@ -170,7 +182,6 @@ async function initializeMLService(): Promise<void> {
     await mlService.initialize({
       storagePath: app.getPath('userData'),
       enableAutoTraining: true,
-      algorithmId: 'audiio-algo',
     });
 
     // Set library provider for ML service
@@ -305,7 +316,8 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      webviewTag: true // Enable <webview> tag for video embeds
     },
     // Frameless window with custom title bar (Spotify-style)
     frame: false,
@@ -841,48 +853,103 @@ function setupIPCHandlers(): void {
   // =============================================
 
   // Get audio features for a track (from cache or analyze)
-  ipcMain.handle('get-audio-features', async (_event, { trackId, streamUrl }: { trackId: string; streamUrl?: string }) => {
-    try {
-      // Check cache first
-      if (audioFeaturesCache.has(trackId)) {
-        console.log(`[AudioAnalysis] Cache hit for ${trackId}`);
-        return audioFeaturesCache.get(trackId);
-      }
+  // Accepts optional track object for stream resolution via plugins
+  ipcMain.handle('get-audio-features', async (_event, {
+    trackId,
+    streamUrl,
+    track
+  }: {
+    trackId: string;
+    streamUrl?: string;
+    track?: UnifiedTrack;
+  }) => {
+    // Check cache first (fast path)
+    if (audioFeaturesCache.has(trackId)) {
+      return audioFeaturesCache.get(trackId);
+    }
 
-      // If no stream URL, try to resolve the track first
-      if (!streamUrl) {
-        console.log(`[AudioAnalysis] No stream URL for ${trackId}, returning null`);
-        return null;
-      }
-
-      // Analyze the audio stream
-      console.log(`[AudioAnalysis] Analyzing ${trackId}...`);
-      const features = await audioAnalyzer.analyzeUrl(streamUrl, {
-        maxDuration: 45,      // Analyze 45 seconds
-        skipToPosition: 30,   // Start from middle of song
-        analyzeBpm: true,
-        analyzeKey: true,
-        analyzeEnergy: true,
-        analyzeVocals: true
-      });
-
-      if (features) {
-        // Cache the result
-        audioFeaturesCache.set(trackId, features);
-        console.log(`[AudioAnalysis] Completed for ${trackId}:`, {
-          bpm: features.bpm,
-          key: features.key,
-          mode: features.mode,
-          energy: features.energy?.toFixed(2)
-        });
-        return features;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('[AudioAnalysis] Error:', error);
+    // Check if this track already failed resolution (prevents log spam)
+    if (audioAnalysisFailedIds.has(trackId)) {
       return null;
     }
+
+    // Check if analysis is already in-flight (deduplication)
+    const inFlight = audioAnalysisInFlight.get(trackId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    // Create the analysis promise
+    const analysisPromise = (async (): Promise<AudioFeatures | null> => {
+      try {
+        let resolvedStreamUrl = streamUrl;
+
+        // If no stream URL but we have track data, try to resolve via plugins
+        if (!resolvedStreamUrl && track && trackResolver) {
+          try {
+            const streamInfo = await trackResolver.resolveStream(track);
+            if (streamInfo?.url) {
+              resolvedStreamUrl = streamInfo.url;
+            }
+          } catch (resolveError) {
+            // Resolution failed, will be handled below
+          }
+        }
+
+        // If still no stream URL, mark as failed and return null
+        if (!resolvedStreamUrl) {
+          audioAnalysisFailedIds.add(trackId);
+
+          // Batch log failed IDs to reduce spam
+          pendingFailedIds.push(trackId);
+          if (!failedIdsLogTimer) {
+            failedIdsLogTimer = setTimeout(() => {
+              if (pendingFailedIds.length > 0) {
+                console.log(`[AudioAnalysis] No stream URL for ${pendingFailedIds.length} track(s):`,
+                  pendingFailedIds.length <= 3 ? pendingFailedIds : `${pendingFailedIds.slice(0, 3).join(', ')} and ${pendingFailedIds.length - 3} more`);
+                pendingFailedIds.length = 0;
+              }
+              failedIdsLogTimer = null;
+            }, 1000);
+          }
+          return null;
+        }
+
+        // Analyze the audio stream
+        console.log(`[AudioAnalysis] Analyzing ${trackId}...`);
+        const features = await audioAnalyzer.analyzeUrl(resolvedStreamUrl, {
+          maxDuration: 45,
+          skipToPosition: 30,
+          analyzeBpm: true,
+          analyzeKey: true,
+          analyzeEnergy: true,
+          analyzeVocals: true
+        });
+
+        if (features) {
+          audioFeaturesCache.set(trackId, features);
+          console.log(`[AudioAnalysis] Completed for ${trackId}:`, {
+            bpm: features.bpm,
+            key: features.key,
+            mode: features.mode,
+            energy: features.energy?.toFixed(2)
+          });
+          return features;
+        }
+
+        return null;
+      } catch (error) {
+        console.error('[AudioAnalysis] Error:', error);
+        return null;
+      } finally {
+        // Remove from in-flight after completion
+        audioAnalysisInFlight.delete(trackId);
+      }
+    })();
+
+    // Track the in-flight promise
+    audioAnalysisInFlight.set(trackId, analysisPromise);
+    return analysisPromise;
   });
 
   // Analyze audio from a file path
@@ -923,11 +990,12 @@ function setupIPCHandlers(): void {
     return result;
   });
 
-  // Clear audio features cache
+  // Clear audio features cache (also clears failed IDs to allow retry)
   ipcMain.handle('clear-audio-features-cache', () => {
     audioFeaturesCache.clear();
+    audioAnalysisFailedIds.clear();
     audioAnalyzer.clearCache();
-    console.log('[AudioAnalysis] Cache cleared');
+    console.log('[AudioAnalysis] Cache cleared (including failed IDs)');
     return { success: true };
   });
 
@@ -1124,16 +1192,17 @@ function setupIPCHandlers(): void {
 
       // Create AuthManager if not exists
       if (!mobileAuthManager && AuthManager) {
-        const dataPath = path.join(app.getPath('userData'), 'mobile');
-        console.log('[Mobile] Creating AuthManager with data path:', dataPath);
-        mobileAuthManager = new AuthManager({ dataPath, defaultExpirationDays: 30 });
+        mobileDataPath = path.join(app.getPath('userData'), 'mobile');
+        console.log('[Mobile] Creating AuthManager with data path:', mobileDataPath);
+        mobileAuthManager = new AuthManager({ dataPath: mobileDataPath, defaultExpirationDays: 30 });
       }
 
       console.log('[Mobile] Creating new MobileServer instance...');
       mobileServer = new MobileServer({
         config: {
           port: 8484,
-          enableTunnel: false
+          enableTunnel: false,
+          dataPath: mobileDataPath  // For persistent server identity
         },
         customRelayUrl: options?.customRelayUrl,
         orchestrators: {
@@ -1223,6 +1292,32 @@ function setupIPCHandlers(): void {
     }
   });
 
+  // Refresh mobile pairing code (only refreshes local QR, relay code stays the same)
+  ipcMain.handle('refresh-mobile-pairing-code', async () => {
+    if (!mobileServer) {
+      return { success: false, error: 'Mobile server not running' };
+    }
+
+    try {
+      const refreshed = await mobileServer.refreshPairingCode?.();
+      if (refreshed) {
+        const pairing = {
+          code: refreshed.code,
+          qrCode: refreshed.qrCode,
+          localUrl: refreshed.localUrl,
+          expiresAt: refreshed.expiresAt,
+          relayActive: mobileAccessConfig?.relayActive || mobileAccessConfig?.p2pActive || false
+        };
+        console.log('[Mobile] Pairing code refreshed:', pairing.code);
+        return { success: true, pairing };
+      }
+      return { success: false, error: 'Failed to refresh code' };
+    } catch (error) {
+      console.error('[Mobile] Failed to refresh pairing code:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
   // Toggle remote access (tunnel)
   ipcMain.handle('set-mobile-remote-access', async (_event, enable: boolean) => {
     if (!mobileServer) {
@@ -1236,7 +1331,8 @@ function setupIPCHandlers(): void {
       mobileServer = new MobileServer({
         config: {
           port: 8484,
-          enableTunnel: enable
+          enableTunnel: enable,
+          dataPath: mobileDataPath  // For persistent server identity
         },
         orchestrators: {
           search: searchOrchestrator,
@@ -1287,7 +1383,8 @@ function setupIPCHandlers(): void {
       mobileServer = new MobileServer({
         config: {
           port: 8484,
-          enableTunnel
+          enableTunnel,
+          dataPath: mobileDataPath  // For persistent server identity
         },
         orchestrators: {
           search: searchOrchestrator,

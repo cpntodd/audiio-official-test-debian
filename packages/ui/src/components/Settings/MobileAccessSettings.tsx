@@ -16,6 +16,17 @@ interface PairingConfig {
   relayActive: boolean;
 }
 
+interface AccessConfig {
+  localUrl?: string;
+  p2pCode?: string;
+  relayCode?: string;
+  p2pActive?: boolean;
+  relayActive?: boolean;
+  remoteQrCode?: string;
+  qrCode?: string;
+  token?: string;
+}
+
 interface PairedDevice {
   id: string;
   name: string;
@@ -27,6 +38,7 @@ interface MobileAccessState {
   isEnabled: boolean;
   isLoading: boolean;
   pairing: PairingConfig | null;
+  accessConfig: AccessConfig | null;
   devices: PairedDevice[];
   hasAcceptedPrivacy: boolean;
 }
@@ -109,29 +121,38 @@ const PrivacyNotice: React.FC<PrivacyNoticeProps> = ({ onAccept, onDecline }) =>
 };
 
 // ========================================
-// Pairing Code Display
+// Connection Info Display
 // ========================================
 
-interface PairingCodeDisplayProps {
+interface ConnectionInfoDisplayProps {
   code: string;
-  qrCode?: string;
-  isActive: boolean;
+  localUrl?: string;
+  remoteUrl?: string;
+  localQrCode?: string;
+  remoteQrCode?: string;
+  isRemoteActive: boolean;
   onRefresh: () => void;
   isLoading: boolean;
 }
 
-const PairingCodeDisplay: React.FC<PairingCodeDisplayProps> = ({
+const ConnectionInfoDisplay: React.FC<ConnectionInfoDisplayProps> = ({
   code,
-  qrCode,
-  isActive,
+  localUrl,
+  remoteUrl,
+  localQrCode,
+  remoteQrCode,
+  isRemoteActive,
   onRefresh,
   isLoading
 }) => {
-  const [copied, setCopied] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLocal, setCopiedLocal] = useState(false);
+  const [copiedRemote, setCopiedRemote] = useState(false);
+  const [activeQr, setActiveQr] = useState<'local' | 'remote'>('remote');
 
-  const handleCopy = async () => {
+  const handleCopy = async (text: string, setCopied: (v: boolean) => void) => {
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -139,54 +160,147 @@ const PairingCodeDisplay: React.FC<PairingCodeDisplayProps> = ({
     }
   };
 
+  // Generate remote URL from code if not provided
+  const actualRemoteUrl = remoteUrl || (code ? `https://magicianjarden.github.io/audiio-official/remote/#p2p=${code}` : '');
+
   return (
-    <div className="mobile-pairing-container">
+    <div className="mobile-connection-container">
       {/* Status indicator */}
       <div className="mobile-pairing-status">
-        <span className={`mobile-pairing-indicator ${isActive ? 'active' : ''}`} />
-        <span>{isActive ? 'Ready to connect' : 'Connecting...'}</span>
+        <span className={`mobile-pairing-indicator ${isRemoteActive ? 'active' : ''}`} />
+        <span>{isRemoteActive ? 'Ready to connect' : 'Local only'}</span>
+        <button
+          className="mobile-pairing-btn refresh"
+          onClick={onRefresh}
+          disabled={isLoading}
+          title="Refresh connection info"
+        >
+          <RefreshIcon size={14} />
+        </button>
       </div>
 
-      {/* Code display */}
-      <div className="mobile-pairing-code-card">
-        <div className="mobile-pairing-code">
-          {code.split('-').map((part, idx) => (
-            <React.Fragment key={idx}>
-              {idx > 0 && <span className="mobile-pairing-separator">-</span>}
-              <span className="mobile-pairing-code-part">{part}</span>
-            </React.Fragment>
-          ))}
+      {/* Connection Code - Primary */}
+      <div className="mobile-connection-section primary">
+        <div className="mobile-connection-label">
+          <LinkIcon size={16} />
+          <span>Connection Code</span>
         </div>
-        <div className="mobile-pairing-actions">
+        <div className="mobile-pairing-code-card">
+          <div className="mobile-pairing-code">
+            {code.split('-').map((part, idx) => (
+              <React.Fragment key={idx}>
+                {idx > 0 && <span className="mobile-pairing-separator">-</span>}
+                <span className="mobile-pairing-code-part">{part}</span>
+              </React.Fragment>
+            ))}
+          </div>
           <button
             className="mobile-pairing-btn"
-            onClick={handleCopy}
+            onClick={() => handleCopy(code, setCopiedCode)}
             title="Copy code"
           >
-            {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
-          </button>
-          <button
-            className="mobile-pairing-btn"
-            onClick={onRefresh}
-            disabled={isLoading}
-            title="Generate new code"
-          >
-            <RefreshIcon size={16} />
+            {copiedCode ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
           </button>
         </div>
+        <p className="mobile-connection-hint">
+          Enter this code in the Audiio mobile app
+        </p>
       </div>
 
-      {/* QR Code */}
-      {qrCode && (
-        <div className="mobile-pairing-qr">
-          <img src={qrCode} alt="Scan to connect" className="mobile-pairing-qr-image" />
+      {/* QR Code Section with tabs */}
+      {(localQrCode || remoteQrCode) && (
+        <div className="mobile-qr-section">
+          <div className="mobile-qr-tabs">
+            {remoteQrCode && (
+              <button
+                className={`mobile-qr-tab ${activeQr === 'remote' ? 'active' : ''}`}
+                onClick={() => setActiveQr('remote')}
+              >
+                <GlobeIcon size={14} />
+                Remote Access
+              </button>
+            )}
+            {localQrCode && (
+              <button
+                className={`mobile-qr-tab ${activeQr === 'local' ? 'active' : ''}`}
+                onClick={() => setActiveQr('local')}
+              >
+                <WifiIcon size={14} />
+                Local Network
+              </button>
+            )}
+          </div>
+          <div className="mobile-pairing-qr">
+            <img
+              src={activeQr === 'remote' ? remoteQrCode : localQrCode}
+              alt={activeQr === 'remote' ? 'Scan for remote access' : 'Scan for local access'}
+              className="mobile-pairing-qr-image"
+            />
+          </div>
+          <p className="mobile-qr-hint">
+            {activeQr === 'remote'
+              ? 'Scan to connect from anywhere'
+              : 'Scan when on the same network'}
+          </p>
         </div>
       )}
 
-      <p className="mobile-pairing-hint">
-        Enter this code on your mobile device or scan the QR code.
-        Works from any network.
-      </p>
+      {/* URLs Section */}
+      <div className="mobile-urls-section">
+        {/* Remote URL */}
+        {actualRemoteUrl && isRemoteActive && (
+          <div className="mobile-url-item">
+            <div className="mobile-url-label">
+              <GlobeIcon size={14} />
+              <span>Remote Access (anywhere)</span>
+            </div>
+            <div className="mobile-url-row">
+              <a
+                href={actualRemoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mobile-url-link"
+              >
+                {actualRemoteUrl.length > 50 ? actualRemoteUrl.slice(0, 50) + '...' : actualRemoteUrl}
+              </a>
+              <button
+                className="mobile-pairing-btn small"
+                onClick={() => handleCopy(actualRemoteUrl, setCopiedRemote)}
+                title="Copy URL"
+              >
+                {copiedRemote ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Local URL */}
+        {localUrl && (
+          <div className="mobile-url-item">
+            <div className="mobile-url-label">
+              <WifiIcon size={14} />
+              <span>Local Network</span>
+            </div>
+            <div className="mobile-url-row">
+              <a
+                href={code ? `${localUrl}/remote?pair=${code}` : `${localUrl}/remote`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mobile-url-link"
+              >
+                {localUrl}/remote
+              </a>
+              <button
+                className="mobile-pairing-btn small"
+                onClick={() => handleCopy(code ? `${localUrl}/remote?pair=${code}` : `${localUrl}/remote`, setCopiedLocal)}
+                title="Copy URL"
+              >
+                {copiedLocal ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -373,6 +487,7 @@ export const MobileAccessSettings: React.FC = () => {
     isEnabled: false,
     isLoading: true,
     pairing: null,
+    accessConfig: null,
     devices: [],
     hasAcceptedPrivacy: localStorage.getItem('audiio-mobile-privacy-accepted') === 'true'
   });
@@ -401,6 +516,7 @@ export const MobileAccessSettings: React.FC = () => {
           ...prev,
           isEnabled: status.isEnabled,
           pairing: status.pairing || null,
+          accessConfig: status.accessConfig || null,
           isLoading: false
         }));
       } else {
@@ -457,6 +573,7 @@ export const MobileAccessSettings: React.FC = () => {
           ...prev,
           isEnabled: true,
           pairing: result.pairing || null,
+          accessConfig: result.accessConfig || null,
           isLoading: false
         }));
       } else {
@@ -478,6 +595,7 @@ export const MobileAccessSettings: React.FC = () => {
         ...prev,
         isEnabled: false,
         pairing: null,
+        accessConfig: null,
         devices: [],
         isLoading: false
       }));
@@ -595,13 +713,15 @@ export const MobileAccessSettings: React.FC = () => {
       {/* Content - only show when enabled */}
       {state.isEnabled && (
         <div className="mobile-access-content">
-          {state.pairing ? (
+          {state.pairing || state.accessConfig ? (
             <>
-              {/* Pairing Code Section */}
-              <PairingCodeDisplay
-                code={state.pairing.code}
-                qrCode={state.pairing.qrCode}
-                isActive={state.pairing.relayActive}
+              {/* Connection Info Section */}
+              <ConnectionInfoDisplay
+                code={state.pairing?.code || state.accessConfig?.relayCode || state.accessConfig?.p2pCode || ''}
+                localUrl={state.pairing?.localUrl || state.accessConfig?.localUrl}
+                localQrCode={state.pairing?.qrCode || state.accessConfig?.qrCode}
+                remoteQrCode={state.accessConfig?.remoteQrCode}
+                isRemoteActive={state.pairing?.relayActive || state.accessConfig?.relayActive || state.accessConfig?.p2pActive || false}
                 onRefresh={handleRefreshCode}
                 isLoading={state.isLoading}
               />
@@ -728,6 +848,18 @@ const RefreshIcon: React.FC<{ size: number }> = ({ size }) => (
 const SettingsIcon: React.FC<{ size: number }> = ({ size }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
     <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+  </svg>
+);
+
+const LinkIcon: React.FC<{ size: number }> = ({ size }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/>
+  </svg>
+);
+
+const WifiIcon: React.FC<{ size: number }> = ({ size }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/>
   </svg>
 );
 

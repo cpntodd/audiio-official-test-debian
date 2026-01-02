@@ -59,6 +59,8 @@ export {
   MusicNoteIcon,
   MusicNote2Icon,
   LyricsIcon,
+  PlainLyricsIcon,
+  SyncedLyricsIcon,
   PlaylistIcon,
   PlaylistAddIcon,
   AlbumIcon,
