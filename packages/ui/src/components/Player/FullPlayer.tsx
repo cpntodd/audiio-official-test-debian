@@ -6,6 +6,7 @@ import { useLyricsStore } from '../../stores/lyrics-store';
 import { useNavigationStore } from '../../stores/navigation-store';
 import { LyricsDisplay } from './LyricsDisplay';
 import { extractColorsFromImage, type ExtractedColors } from '../../utils/color-extractor';
+import { useArtwork } from '../../hooks/useArtwork';
 import {
   PlayIcon,
   PauseIcon,
@@ -53,6 +54,15 @@ export const FullPlayer: React.FC = () => {
 
   const trackIsLiked = currentTrack ? isLiked(currentTrack.id) : false;
 
+  // Resolve artwork (handles embedded artwork from local files)
+  const { artworkUrl } = useArtwork(currentTrack);
+  const [artworkError, setArtworkError] = useState(false);
+
+  // Reset artwork error when track changes
+  useEffect(() => {
+    setArtworkError(false);
+  }, [currentTrack?.id]);
+
   const handleGoToAlbum = useCallback(() => {
     if (currentTrack?.album) {
       collapsePlayer();
@@ -96,15 +106,10 @@ export const FullPlayer: React.FC = () => {
 
   // Extract colors from artwork for animated background
   useEffect(() => {
-    const artworkUrl = currentTrack?.artwork?.large ??
-      currentTrack?.artwork?.medium ??
-      currentTrack?.album?.artwork?.large ??
-      currentTrack?.album?.artwork?.medium;
-
     if (artworkUrl && playerMode === 'full') {
       extractColorsFromImage(artworkUrl).then(setColors);
     }
-  }, [currentTrack?.id, playerMode]);
+  }, [artworkUrl, playerMode]);
 
   // Update current lyric line and word based on position
   // Use atomic update when sing-along is enabled for smooth word tracking
@@ -209,9 +214,9 @@ export const FullPlayer: React.FC = () => {
   if (playerMode !== 'full' || !currentTrack) return null;
 
   const progressPercent = duration > 0 ? (position / duration) * 100 : 0;
-  const artworkUrl = currentTrack.artwork?.large ?? currentTrack.artwork?.medium ?? currentTrack.album?.artwork?.large ?? currentTrack.album?.artwork?.medium;
   const artistNames = currentTrack.artists.map(a => a.name).join(', ');
   const hasAnimatedArtwork = !!animatedVideoUrl;
+  const showArtwork = artworkUrl && !artworkError;
 
   return (
     <div className="full-player" ref={containerRef}>
@@ -226,7 +231,7 @@ export const FullPlayer: React.FC = () => {
       />
 
       {/* Blurred Artwork Overlay */}
-      {artworkUrl && (
+      {showArtwork && (
         <div
           className="full-player-bg"
           style={{ backgroundImage: `url(${artworkUrl})` }}
@@ -275,11 +280,12 @@ export const FullPlayer: React.FC = () => {
               muted={!animatedArtwork.hasAudio}
               playsInline
             />
-          ) : artworkUrl ? (
+          ) : showArtwork ? (
             <img
               className="full-player-artwork"
               src={artworkUrl}
               alt={currentTrack.title}
+              onError={() => setArtworkError(true)}
             />
           ) : (
             <div className="full-player-artwork full-player-artwork-placeholder">

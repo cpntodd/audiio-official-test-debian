@@ -121,8 +121,9 @@ interface PlayerState {
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
-  // Remote mode
-  playbackMode: 'local',
+  // Default to remote mode - mobile controls desktop playback
+  // 'local' mode plays audio on mobile device itself
+  playbackMode: 'remote',
   desktopState: null,
 
   // Local state
@@ -163,8 +164,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({ isBuffering: true, currentTrack: trackToPlay });
 
     try {
-      // Call API to get stream info
-      const response = await tunnelFetch('/api/playback/play', {
+      // Use /api/stream/resolve to get stream URL WITHOUT triggering desktop playback
+      // This allows mobile-only playback without affecting desktop
+      const response = await tunnelFetch('/api/stream/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ track: trackToPlay })
@@ -216,13 +218,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
+    // Local mode: only pause mobile audio, don't affect desktop
     if (audioElement) {
       audioElement.pause();
       set({ isPlaying: false });
     }
-
-    // Notify server
-    tunnelFetch('/api/playback/pause', { method: 'POST' }).catch(console.error);
   },
 
   resume: () => {
@@ -234,13 +234,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
+    // Local mode: only resume mobile audio, don't affect desktop
     if (audioElement) {
       audioElement.play();
       set({ isPlaying: true });
     }
-
-    // Notify server
-    tunnelFetch('/api/playback/resume', { method: 'POST' }).catch(console.error);
   },
 
   seek: (position) => {
@@ -252,17 +250,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
 
+    // Local mode: only seek mobile audio, don't affect desktop
     if (audioElement) {
       audioElement.currentTime = position;
       set({ position });
     }
-
-    // Notify server
-    tunnelFetch('/api/playback/seek', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ position })
-    }).catch(console.error);
   },
 
   setVolume: (volume) => {

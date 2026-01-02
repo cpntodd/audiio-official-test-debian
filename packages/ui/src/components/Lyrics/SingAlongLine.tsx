@@ -165,23 +165,31 @@ export const SingAlongLyrics = memo<SingAlongLyricsProps>(({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const activeLineRef = React.useRef<HTMLDivElement>(null);
 
-  // Smooth scroll to active line
+  // Smooth scroll to active line with RAF for batched layout
   React.useEffect(() => {
     if (!activeLineRef.current || !containerRef.current) return;
 
     const container = containerRef.current;
     const activeLine = activeLineRef.current;
-    const containerHeight = container.clientHeight;
-    const lineTop = activeLine.offsetTop;
-    const lineHeight = activeLine.clientHeight;
 
-    // Center the active line
-    const scrollTarget = lineTop - (containerHeight / 2) + (lineHeight / 2);
+    // Use RAF to batch layout reads/writes and avoid thrashing
+    const rafId = requestAnimationFrame(() => {
+      // Read phase - batch all layout measurements
+      const containerHeight = container.clientHeight;
+      const lineTop = activeLine.offsetTop;
+      const lineHeight = activeLine.clientHeight;
 
-    container.scrollTo({
-      top: Math.max(0, scrollTarget),
-      behavior: 'smooth'
+      // Center the active line
+      const scrollTarget = lineTop - (containerHeight / 2) + (lineHeight / 2);
+
+      // Write phase - scrollTo is batched with the reads
+      container.scrollTo({
+        top: Math.max(0, scrollTarget),
+        behavior: 'smooth'
+      });
     });
+
+    return () => cancelAnimationFrame(rafId);
   }, [currentLineIndex]);
 
   const handleLineClick = useCallback((index: number) => {

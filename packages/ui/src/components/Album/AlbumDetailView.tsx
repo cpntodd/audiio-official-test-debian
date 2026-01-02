@@ -13,7 +13,6 @@ import { MusicNoteIcon, PlayIcon, ShuffleIcon, MoreIcon, BackIcon } from '@audii
 import { getColorsForArtwork, getDefaultColors, type ExtractedColors } from '../../utils/color-extraction';
 import { useAlbumEnrichment } from '../../hooks/useAlbumEnrichment';
 import { MusicVideosSection } from '../Artist/sections/MusicVideosSection';
-import { VideoPlayerModal } from '../Modals/VideoPlayerModal';
 import { CollapsibleSection } from '../Artist/CollapsibleSection';
 import type { UnifiedTrack, AlbumCredits, MusicVideo } from '@audiio/core';
 import type { SearchAlbum } from '../../stores/search-store';
@@ -31,14 +30,13 @@ function hasCreditsContent(credits: AlbumCredits): boolean {
 
 export const AlbumDetailView: React.FC = () => {
   const { selectedAlbumId, selectedAlbumData, goBack, openArtist, openAlbum } = useNavigationStore();
-  const { play, setQueue, currentTrack } = usePlayerStore();
+  const { play, setQueue, currentTrack, playVideo } = usePlayerStore();
   const { fetchAlbum, getAlbum, loadingAlbumId, error } = useAlbumStore();
   const { showContextMenu: showTrackContextMenu } = useTrackContextMenu();
   const { showContextMenu: showAlbumContextMenu } = useAlbumContextMenu();
 
   const [colors, setColors] = useState<ExtractedColors>(getDefaultColors());
   const [showCredits, setShowCredits] = useState(false);
-  const [activeVideo, setActiveVideo] = useState<MusicVideo | null>(null);
 
   // Get album data
   const albumDetail = getAlbum(selectedAlbumId || '');
@@ -57,7 +55,7 @@ export const AlbumDetailView: React.FC = () => {
   });
 
   const handleVideoClick = (video: MusicVideo) => {
-    setActiveVideo(video);
+    playVideo(video);
   };
 
   // Extract colors from artwork
@@ -496,12 +494,6 @@ export const AlbumDetailView: React.FC = () => {
           onClose={() => setShowCredits(false)}
         />
       )}
-
-      {/* Video Player Modal */}
-      <VideoPlayerModal
-        video={activeVideo}
-        onClose={() => setActiveVideo(null)}
-      />
     </div>
   );
 };

@@ -3,11 +3,13 @@
  *
  * Validates access tokens for all API requests.
  * Tokens can be provided via query param or Authorization header.
+ * Supports both legacy session tokens and new device tokens.
  */
 
 import type { FastifyRequest, FastifyReply, HookHandlerDoneFunction } from 'fastify';
 import type { AccessManager } from '../services/access-manager';
 import type { SessionManager } from '../services/session-manager';
+import type { PairingService } from '../services/pairing-service';
 
 /** Routes that don't require authentication */
 const PUBLIC_ROUTES = [
@@ -15,7 +17,12 @@ const PUBLIC_ROUTES = [
   '/api/health',
   '/',
   '/index.html',
-  '/favicon.ico'
+  '/favicon.ico',
+  // Auth routes - these handle their own validation
+  '/api/auth/pair',
+  '/api/auth/pair/check',
+  '/api/auth/login',
+  '/api/auth/device'
 ];
 
 /** Static file extensions that don't require auth */
@@ -26,7 +33,8 @@ const PUBLIC_PREFIXES = ['/assets/'];
 
 export function authMiddleware(
   accessManager: AccessManager,
-  _sessionManager: SessionManager
+  _sessionManager: SessionManager,
+  pairingService?: PairingService
 ) {
   return function authenticate(
     request: FastifyRequest,
@@ -75,18 +83,30 @@ export function authMiddleware(
       return;
     }
 
-    if (!accessManager.validateToken(token)) {
-      reply.code(401).send({
-        error: 'Unauthorized',
-        message: 'Invalid or expired access token'
-      });
-      return;
+    // Try legacy access token first
+    if (accessManager.validateToken(token)) {
+      console.log(`[Auth] Allowed (access token): ${pathname}`);
+      (request as any).accessToken = token;
+      return done();
     }
 
-    // Attach token to request for later use
-    (request as any).accessToken = token;
+    // Try device token (from pairing) - format: deviceId:token or just token
+    if (pairingService) {
+      // Token could be just the token part, or deviceId:token format
+      const deviceTokenResult = pairingService.validateDeviceToken(token);
+      if (deviceTokenResult.valid) {
+        console.log(`[Auth] Allowed (device token): ${pathname}`);
+        (request as any).accessToken = token;
+        (request as any).deviceId = deviceTokenResult.deviceId;
+        return done();
+      }
+    }
 
-    done();
+    console.log(`[Auth] Rejected (invalid token): ${pathname}`);
+    reply.code(401).send({
+      error: 'Unauthorized',
+      message: 'Invalid or expired access token'
+    });
   };
 }
 

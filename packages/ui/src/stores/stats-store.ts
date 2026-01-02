@@ -8,12 +8,18 @@ import type { UnifiedTrack } from '@audiio/core';
 
 export interface ListenEntry {
   trackId: string;
+  trackTitle: string;
   artistId: string;
   artistName: string;
+  albumId?: string;
+  albumTitle?: string;
+  artwork?: string;
   genre: string;
-  duration: number; // seconds
+  duration: number; // seconds listened
+  totalDuration?: number; // total track duration (for skip percentage)
   timestamp: number;
   completed: boolean;
+  skipped: boolean;
 }
 
 export interface ArtistStats {
@@ -73,8 +79,10 @@ interface StatsState {
   cacheTimestamp: number;
 
   // Actions
-  recordListen: (track: UnifiedTrack, duration: number, completed: boolean) => void;
+  recordListen: (track: UnifiedTrack, duration: number, completed: boolean, skipped?: boolean) => void;
+  recordSkip: (track: UnifiedTrack, listenedDuration: number, totalDuration: number) => void;
   getStats: (period: 'week' | 'month' | 'year' | 'all') => StatsSnapshot;
+  getSkipStats: () => { totalSkips: number; earlySkips: number; avgSkipPosition: number };
   clearHistory: () => void;
 }
 
@@ -250,20 +258,50 @@ export const useStatsStore = create<StatsState>()(
       cachedStats: {},
       cacheTimestamp: 0,
 
-      recordListen: (track, duration, completed) => {
+      recordListen: (track, duration, completed, skipped = false) => {
         const entry: ListenEntry = {
           trackId: track.id,
+          trackTitle: track.title,
           artistId: track.artists[0]?.id || 'unknown',
           artistName: track.artists[0]?.name || 'Unknown Artist',
+          albumId: track.album?.id,
+          albumTitle: track.album?.title,
+          artwork: track.artwork?.small || track.album?.artwork?.small,
           genre: track.genre || 'Unknown',
           duration,
+          totalDuration: track.duration,
           timestamp: Date.now(),
           completed,
+          skipped,
         };
 
         set(state => ({
           listenHistory: [...state.listenHistory, entry].slice(-5000), // Keep last 5000 entries
           cachedStats: {}, // Invalidate cache
+          cacheTimestamp: 0,
+        }));
+      },
+
+      recordSkip: (track, listenedDuration, totalDuration) => {
+        const entry: ListenEntry = {
+          trackId: track.id,
+          trackTitle: track.title,
+          artistId: track.artists[0]?.id || 'unknown',
+          artistName: track.artists[0]?.name || 'Unknown Artist',
+          albumId: track.album?.id,
+          albumTitle: track.album?.title,
+          artwork: track.artwork?.small || track.album?.artwork?.small,
+          genre: track.genre || 'Unknown',
+          duration: listenedDuration,
+          totalDuration,
+          timestamp: Date.now(),
+          completed: false,
+          skipped: true,
+        };
+
+        set(state => ({
+          listenHistory: [...state.listenHistory, entry].slice(-5000),
+          cachedStats: {},
           cacheTimestamp: 0,
         }));
       },
@@ -287,6 +325,30 @@ export const useStatsStore = create<StatsState>()(
         }));
 
         return stats;
+      },
+
+      getSkipStats: () => {
+        const { listenHistory } = get();
+        const skipped = listenHistory.filter(e => e.skipped);
+        const totalSkips = skipped.length;
+
+        if (totalSkips === 0) {
+          return { totalSkips: 0, earlySkips: 0, avgSkipPosition: 0 };
+        }
+
+        // Early skips are those where less than 25% was played
+        const earlySkips = skipped.filter(e => {
+          if (!e.totalDuration || e.totalDuration <= 0) return false;
+          return (e.duration / e.totalDuration) < 0.25;
+        }).length;
+
+        // Average skip position as percentage
+        const avgSkipPosition = skipped.reduce((sum, e) => {
+          if (!e.totalDuration || e.totalDuration <= 0) return sum;
+          return sum + (e.duration / e.totalDuration);
+        }, 0) / totalSkips;
+
+        return { totalSkips, earlySkips, avgSkipPosition };
       },
 
       clearHistory: () => {

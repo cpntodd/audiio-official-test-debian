@@ -576,17 +576,27 @@ export const useLibraryStore = create<LibraryState>()(
           // Migration from v2 to v3: Wrap liked/disliked tracks with timestamps
           const migrateToLibraryTrack = (tracks: unknown[]): LibraryTrack[] => {
             if (!Array.isArray(tracks)) return [];
-            return tracks.map((item, index) => {
-              // Check if already migrated (has track property)
-              if (item && typeof item === 'object' && 'track' in item && 'addedAt' in item) {
-                return item as LibraryTrack;
-              }
-              // Old format - just a track, add timestamp (older items get earlier timestamps)
-              return {
-                track: item as UnifiedTrack,
-                addedAt: Date.now() - (tracks.length - index) * 1000 // Space them 1 second apart
-              };
-            });
+            return tracks
+              .filter(item => item != null) // Filter out null/undefined
+              .map((item, index) => {
+                // Check if already migrated (has track property)
+                if (item && typeof item === 'object' && 'track' in item && 'addedAt' in item) {
+                  const libTrack = item as LibraryTrack;
+                  // Validate the track itself exists
+                  if (libTrack.track?.id) {
+                    return libTrack;
+                  }
+                  return null; // Invalid track
+                }
+                // Old format - just a track, add timestamp
+                const track = item as UnifiedTrack;
+                if (!track?.id) return null; // Skip invalid tracks
+                return {
+                  track,
+                  addedAt: Date.now() - (tracks.length - index) * 1000
+                };
+              })
+              .filter((item): item is LibraryTrack => item !== null);
           };
 
           state = {

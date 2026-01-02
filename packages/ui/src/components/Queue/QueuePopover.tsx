@@ -18,10 +18,17 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { usePlayerStore } from '../../stores/player-store';
 import { useUIStore } from '../../stores/ui-store';
-import { useSmartQueueStore, useRadioState, useAutoQueueStatus } from '../../stores/smart-queue-store';
+import {
+  useSmartQueueStore,
+  useRadioState,
+  useAutoQueueStatus,
+  useQueueSources,
+  QUEUE_SOURCE_LEGEND,
+  type QueueSourceType
+} from '../../stores/smart-queue-store';
 import { useRecommendationStore } from '../../stores/recommendation-store';
 import { useTrackContextMenu } from '../../contexts/ContextMenuContext';
-import { useMLRanking } from '../../hooks';
+import { useMLRanking, useArtwork } from '../../hooks';
 import { TrackRow } from '../TrackRow/TrackRow';
 import type { UnifiedTrack } from '@audiio/core';
 import {
@@ -32,11 +39,9 @@ import {
   InfinityIcon,
   SpinnerIcon,
   ShuffleIcon,
-  DragHandleIcon
+  DragHandleIcon,
+  InfoIcon
 } from '@audiio/icons';
-
-// Get track source hint based on context
-type QueueSourceType = 'similar' | 'artist' | 'genre' | 'liked' | 'radio' | 'auto' | null;
 
 function getTrackSourceHint(
   track: UnifiedTrack,
@@ -49,28 +54,47 @@ function getTrackSourceHint(
     if (radioSeed.type === 'artist' && track.artists.some(a => a.name === radioSeed.name)) {
       return { type: 'artist', label: radioSeed.name };
     }
+    if (radioSeed.type === 'genre') {
+      return { type: 'genre', label: radioSeed.name };
+    }
+    if (radioSeed.type === 'track') {
+      return { type: 'similar', label: radioSeed.name };
+    }
     return { type: 'radio', label: `${radioSeed.name} Radio` };
   }
 
   // Check if similar to current track
   if (currentTrack && isAutoQueue) {
-    // Same artist
-    const currentArtist = currentTrack.artists[0]?.name;
-    if (currentArtist && track.artists.some(a => a.name === currentArtist)) {
-      return { type: 'artist', label: currentArtist };
+    // Same artist (any artist match, not just primary)
+    const matchingArtist = track.artists.find(a =>
+      currentTrack.artists.some(ca => ca.name === a.name || ca.id === a.id)
+    );
+    if (matchingArtist) {
+      return { type: 'artist', label: matchingArtist.name };
     }
 
-    // Same genre
-    if (currentTrack.genres?.length && track.genres?.length) {
-      const sharedGenre = currentTrack.genres.find(g =>
-        track.genres?.some(tg => tg.toLowerCase() === g.toLowerCase())
+    // Same album
+    if (currentTrack.album?.id && track.album?.id === currentTrack.album.id) {
+      return { type: 'album', label: currentTrack.album.title || 'Same Album' };
+    }
+
+    // Same genre (check all genres, case-insensitive)
+    const trackGenres = track.genres?.map(g => g.toLowerCase()) || [];
+    const currentGenres = currentTrack.genres?.map(g => g.toLowerCase()) || [];
+    if (trackGenres.length && currentGenres.length) {
+      const sharedGenre = currentTrack.genres?.find(g =>
+        trackGenres.includes(g.toLowerCase())
       );
       if (sharedGenre) {
         return { type: 'genre', label: sharedGenre };
       }
     }
 
-    // Auto-queued
+    // Similar mood/energy (if we have this data)
+    // For now, check if both tracks have similar BPM range or energy
+    // This is a placeholder - real implementation would use audio features
+
+    // Default: ML-recommended
     return { type: 'auto', label: 'For You' };
   }
 
@@ -85,7 +109,8 @@ interface SortableQueueItemProps {
   onPlay: () => void;
   onRemove: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent, track: UnifiedTrack) => void;
-  sourceHint?: { type: QueueSourceType; label: string } | null;
+  sourceType?: QueueSourceType;
+  sourceLabel?: string;
 }
 
 const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
@@ -95,7 +120,8 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
   onPlay,
   onRemove,
   onContextMenu,
-  sourceHint,
+  sourceType,
+  sourceLabel,
 }) => {
   const {
     attributes,
@@ -113,11 +139,16 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
     zIndex: isDragging ? 1000 : 'auto',
   };
 
+  // Get legend info for this source type
+  const legend = sourceType ? QUEUE_SOURCE_LEGEND[sourceType] : null;
+  const tooltip = sourceLabel || legend?.description;
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`queue-popover-item ${isDragging ? 'dragging' : ''}`}
+      className={`queue-popover-item ${isDragging ? 'dragging' : ''} ${sourceType ? `queue-source-${sourceType}` : ''}`}
+      title={tooltip}
     >
       <button
         className="queue-popover-item-drag"
@@ -135,18 +166,6 @@ const SortableQueueItem: React.FC<SortableQueueItemProps> = ({
         onContextMenu={onContextMenu}
         compact
       />
-      {sourceHint && (
-        <span
-          className={`queue-source-badge queue-source-${sourceHint.type}`}
-          title={`Added because: ${sourceHint.label}`}
-        >
-          {sourceHint.type === 'artist' && 'Artist'}
-          {sourceHint.type === 'genre' && 'Genre'}
-          {sourceHint.type === 'similar' && 'Similar'}
-          {sourceHint.type === 'radio' && 'Radio'}
-          {sourceHint.type === 'auto' && 'For You'}
-        </span>
-      )}
       <button
         className="queue-popover-item-remove"
         onClick={onRemove}
@@ -162,6 +181,7 @@ export const QueuePopover: React.FC = () => {
   const popoverRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(15);
+  const [showLegend, setShowLegend] = useState(false);
   const { currentTrack, queue, queueIndex, play, setQueue, reorderQueue } = usePlayerStore();
   const { recordReorder } = useRecommendationStore();
   const { isQueueOpen, queueAnchorRect, closeQueue } = useUIStore();
@@ -174,8 +194,19 @@ export const QueuePopover: React.FC = () => {
   const { stopRadio, toggleAutoQueue } = useSmartQueueStore();
   const isSmartQueueActive = isRadioMode || isAutoQueueEnabled;
 
+  // Queue source tracking
+  const queueSources = useQueueSources();
+
   // Re-ranking state
   const [isReranking, setIsReranking] = useState(false);
+
+  // Artwork handling
+  const { artworkUrl } = useArtwork(currentTrack);
+  const [artworkError, setArtworkError] = useState(false);
+
+  useEffect(() => {
+    setArtworkError(false);
+  }, [currentTrack?.id]);
 
   const upNext = queue.slice(queueIndex + 1);
 
@@ -316,8 +347,6 @@ export const QueuePopover: React.FC = () => {
     right: `calc(100vw - ${queueAnchorRect.right}px)`,
   };
 
-  const artworkUrl = currentTrack?.artwork?.medium ?? currentTrack?.album?.artwork?.medium;
-
   return (
     <div className="queue-popover" ref={popoverRef} style={popoverStyle}>
       <header className="queue-popover-header">
@@ -326,6 +355,34 @@ export const QueuePopover: React.FC = () => {
           <h3>Queue</h3>
         </div>
         <div className="queue-popover-actions">
+          {/* Legend button - shows what the colors mean */}
+          {isSmartQueueActive && (
+            <div className="queue-legend-wrapper">
+              <button
+                className={`queue-legend-toggle ${showLegend ? 'active' : ''}`}
+                onClick={() => setShowLegend(!showLegend)}
+                title="What do the colors mean?"
+              >
+                <InfoIcon size={16} />
+              </button>
+              {showLegend && (
+                <div className="queue-legend-popup">
+                  <h4>Queue Colors</h4>
+                  <div className="queue-legend-items">
+                    {Object.entries(QUEUE_SOURCE_LEGEND)
+                      .filter(([key]) => ['artist', 'album', 'genre', 'similar', 'radio', 'liked', 'ml'].includes(key))
+                      .map(([key, { label, color, description }]) => (
+                        <div key={key} className="queue-legend-item">
+                          <span className="queue-legend-color" style={{ background: color }} />
+                          <span className="queue-legend-label">{label}</span>
+                          <span className="queue-legend-desc">{description}</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <button
             className={`queue-smart-toggle ${isSmartQueueActive ? 'active' : ''}`}
             onClick={isRadioMode ? stopRadio : toggleAutoQueue}
@@ -369,8 +426,12 @@ export const QueuePopover: React.FC = () => {
             <h4 className="queue-popover-section-title">Now Playing</h4>
             <div className="queue-popover-now-playing">
               <div className="queue-popover-artwork">
-                {artworkUrl ? (
-                  <img src={artworkUrl} alt={currentTrack.title} />
+                {artworkUrl && !artworkError ? (
+                  <img
+                    src={artworkUrl}
+                    alt={currentTrack.title}
+                    onError={() => setArtworkError(true)}
+                  />
                 ) : (
                   <div className="queue-popover-artwork-placeholder">
                     <MusicNoteIcon size={20} />
@@ -428,18 +489,30 @@ export const QueuePopover: React.FC = () => {
                 strategy={verticalListSortingStrategy}
               >
                 <div className="queue-popover-list">
-                  {upNext.slice(0, visibleCount).map((track, index) => (
-                    <SortableQueueItem
-                      key={`queue-${track.id}`}
-                      id={`queue-${track.id}`}
-                      track={track}
-                      index={index}
-                      onPlay={() => handlePlayFromQueue(index)}
-                      onRemove={(e) => handleRemoveFromQueue(e, index)}
-                      onContextMenu={showContextMenu}
-                      sourceHint={isSmartQueueActive ? getTrackSourceHint(track, currentTrack, radioSeed, isAutoQueueEnabled) : null}
-                    />
-                  ))}
+                  {upNext.slice(0, visibleCount).map((track, index) => {
+                    // Get stored source or infer from context
+                    const storedSource = queueSources[track.id];
+                    const inferredSource = isSmartQueueActive
+                      ? getTrackSourceHint(track, currentTrack, radioSeed, isAutoQueueEnabled)
+                      : null;
+
+                    const sourceType = storedSource?.type || inferredSource?.type || undefined;
+                    const sourceLabel = storedSource?.label || inferredSource?.label;
+
+                    return (
+                      <SortableQueueItem
+                        key={`queue-${track.id}`}
+                        id={`queue-${track.id}`}
+                        track={track}
+                        index={index}
+                        onPlay={() => handlePlayFromQueue(index)}
+                        onRemove={(e) => handleRemoveFromQueue(e, index)}
+                        onContextMenu={showContextMenu}
+                        sourceType={sourceType}
+                        sourceLabel={sourceLabel}
+                      />
+                    );
+                  })}
                   {upNext.length > visibleCount && (
                     <div className="queue-popover-more">
                       Scroll for {upNext.length - visibleCount} more tracks

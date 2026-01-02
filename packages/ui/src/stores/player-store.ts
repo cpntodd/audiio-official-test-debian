@@ -1,15 +1,17 @@
 /**
- * Player store - manages playback state
+ * Player store - manages playback state (audio + video)
  */
 
 import { create } from 'zustand';
-import type { UnifiedTrack, StreamInfo } from '@audiio/core';
+import type { UnifiedTrack, StreamInfo, MusicVideo, VideoStreamInfo } from '@audiio/core';
 import { streamPrefetch } from '../services/stream-prefetch';
 
 type RepeatMode = 'off' | 'all' | 'one';
+type VideoMode = 'off' | 'float' | 'theater';
+type VideoQuality = '360p' | '480p' | '720p' | '1080p' | 'auto';
 
 interface PlayerState {
-  // State
+  // Audio State
   currentTrack: UnifiedTrack | null;
   queue: UnifiedTrack[];
   queueIndex: number;
@@ -23,7 +25,19 @@ interface PlayerState {
   shuffle: boolean;
   repeat: RepeatMode;
 
-  // Actions
+  // Video State
+  videoMode: VideoMode;
+  currentVideo: MusicVideo | null;
+  videoStreamInfo: VideoStreamInfo | null;
+  isVideoPlaying: boolean;
+  videoPosition: number;
+  videoDuration: number;
+  isVideoLoading: boolean;
+  videoError: string | null;
+  videoQuality: VideoQuality;
+  videoSize: { width: number; height: number };
+
+  // Audio Actions
   play: (track: UnifiedTrack) => Promise<void>;
   pause: () => void;
   resume: () => void;
@@ -44,12 +58,25 @@ interface PlayerState {
   toggleShuffle: () => void;
   cycleRepeat: () => void;
   reorderQueue: (fromIndex: number, toIndex: number) => void;
+
+  // Video Actions
+  playVideo: (video: MusicVideo, quality?: VideoQuality) => Promise<void>;
+  closeVideo: () => void;
+  setVideoMode: (mode: VideoMode) => void;
+  toggleVideoMode: () => void;
+  setVideoStreamInfo: (info: VideoStreamInfo | null) => void;
+  setVideoPlaying: (playing: boolean) => void;
+  setVideoPosition: (position: number) => void;
+  setVideoDuration: (duration: number) => void;
+  setVideoError: (error: string | null) => void;
+  setVideoQuality: (quality: VideoQuality) => Promise<void>;
+  setVideoSize: (size: { width: number; height: number }) => void;
 }
 
-export type { RepeatMode };
+export type { RepeatMode, VideoMode, VideoQuality };
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
-  // Initial state
+  // Initial audio state
   currentTrack: null,
   queue: [],
   queueIndex: -1,
@@ -63,8 +90,26 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   shuffle: false,
   repeat: 'off' as RepeatMode,
 
-  // Actions
+  // Initial video state
+  videoMode: 'off' as VideoMode,
+  currentVideo: null,
+  videoStreamInfo: null,
+  isVideoPlaying: false,
+  videoPosition: 0,
+  videoDuration: 0,
+  isVideoLoading: false,
+  videoError: null,
+  videoQuality: '720p' as VideoQuality,
+  videoSize: { width: 480, height: 270 },
+
+  // Audio Actions
   play: async (track) => {
+    // Pause any playing video when audio starts
+    const { isVideoPlaying } = get();
+    if (isVideoPlaying) {
+      set({ isVideoPlaying: false });
+    }
+
     set({ isLoading: true, error: null });
 
     try {
@@ -171,8 +216,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   resume: () => {
-    const { currentTrack } = get();
+    const { currentTrack, isVideoPlaying } = get();
     if (currentTrack) {
+      // Pause video when audio resumes
+      if (isVideoPlaying) {
+        set({ isVideoPlaying: false });
+      }
       set({ isPlaying: true });
       if (window.api) {
         window.api.resume();
@@ -353,5 +402,122 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
       return { queue: newQueue };
     });
-  }
+  },
+
+  // Video Actions
+  playVideo: async (video, quality) => {
+    const preferredQuality = quality || get().videoQuality;
+    set({
+      currentVideo: video,
+      videoMode: 'float',
+      isVideoLoading: true,
+      videoError: null,
+      videoPosition: 0,
+      videoDuration: 0,
+    });
+
+    // Fetch video stream with preferred quality
+    try {
+      if (window.api?.enrichment?.getVideoStream) {
+        const result = await window.api.enrichment.getVideoStream(
+          video.id,
+          video.source,
+          preferredQuality === 'auto' ? '1080p' : preferredQuality
+        );
+
+        if (result.success && result.data) {
+          set({
+            videoStreamInfo: result.data,
+            isVideoLoading: false,
+            isVideoPlaying: true,
+          });
+        } else {
+          set({
+            videoError: result.error || 'Failed to get video stream',
+            isVideoLoading: false,
+          });
+        }
+      } else {
+        set({
+          videoError: 'Video streaming not available',
+          isVideoLoading: false,
+        });
+      }
+    } catch (error) {
+      set({
+        videoError: error instanceof Error ? error.message : 'Failed to load video',
+        isVideoLoading: false,
+      });
+    }
+  },
+
+  closeVideo: () => {
+    set({
+      videoMode: 'off',
+      currentVideo: null,
+      videoStreamInfo: null,
+      isVideoPlaying: false,
+      videoPosition: 0,
+      videoDuration: 0,
+      isVideoLoading: false,
+      videoError: null,
+    });
+  },
+
+  setVideoMode: (mode) => {
+    set({ videoMode: mode });
+  },
+
+  toggleVideoMode: () => {
+    set(state => ({
+      videoMode: state.videoMode === 'float' ? 'theater' : 'float'
+    }));
+  },
+
+  setVideoStreamInfo: (info) => {
+    set({ videoStreamInfo: info, isVideoLoading: false });
+  },
+
+  setVideoPlaying: (playing) => {
+    set({ isVideoPlaying: playing });
+  },
+
+  setVideoPosition: (position) => {
+    set({ videoPosition: position });
+  },
+
+  setVideoDuration: (duration) => {
+    set({ videoDuration: duration });
+  },
+
+  setVideoError: (error) => {
+    set({ videoError: error, isVideoLoading: false });
+  },
+
+  setVideoQuality: async (quality) => {
+    set({ videoQuality: quality });
+    // Re-fetch stream with new quality if video is playing
+    const { currentVideo } = get();
+    if (currentVideo) {
+      set({ isVideoLoading: true });
+      try {
+        if (window.api?.enrichment?.getVideoStream) {
+          const result = await window.api.enrichment.getVideoStream(
+            currentVideo.id,
+            currentVideo.source,
+            quality === 'auto' ? '1080p' : quality
+          );
+          if (result.success && result.data) {
+            set({ videoStreamInfo: result.data, isVideoLoading: false });
+          }
+        }
+      } catch {
+        set({ isVideoLoading: false });
+      }
+    }
+  },
+
+  setVideoSize: (size) => {
+    set({ videoSize: size });
+  },
 }));

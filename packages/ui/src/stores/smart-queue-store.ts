@@ -32,6 +32,32 @@ import {
 export type QueueMode = 'manual' | 'auto-queue' | 'radio';
 export type RadioSeedType = 'track' | 'artist' | 'genre';
 
+// Queue source tracking - why was this track added?
+export type QueueSourceType =
+  | 'manual'       // User explicitly added
+  | 'artist'       // Same/similar artist
+  | 'album'        // Same album
+  | 'genre'        // Genre match
+  | 'similar'      // Similar track (ML/audio features)
+  | 'radio'        // Radio station
+  | 'mood'         // Mood/energy match
+  | 'discovery'    // New discovery from API
+  | 'trending'     // Trending tracks
+  | 'search'       // From search results
+  | 'liked'        // From user's liked tracks
+  | 'playlist'     // From user's playlists
+  | 'ml'           // ML recommendation
+  | 'auto';        // Generic auto-queue
+
+export interface QueueSource {
+  type: QueueSourceType;
+  label: string;           // Human-readable description
+  context?: string;        // Additional context (artist name, genre, etc.)
+  score?: number;          // ML/relevance score when added
+  timestamp: number;       // When it was added
+  seedTrackId?: string;    // What track triggered this recommendation
+}
+
 export interface RadioSeed {
   type: RadioSeedType;
   id: string;
@@ -65,6 +91,12 @@ export interface SessionHistory {
   sessionStartTime: number;
 }
 
+// Track with source metadata for queue
+export interface QueuedTrack {
+  track: UnifiedTrack;
+  source: QueueSource;
+}
+
 interface SmartQueueState {
   // Mode state
   mode: QueueMode;
@@ -89,6 +121,9 @@ interface SmartQueueState {
   // Candidate cache (tracks fetched but not yet added)
   pendingCandidates: UnifiedTrack[];
 
+  // Queue source tracking - why was each track added?
+  queueSources: Record<string, QueueSource>;
+
   // Actions - Mode
   setMode: (mode: QueueMode) => void;
   enableAutoQueue: () => void;
@@ -103,6 +138,12 @@ interface SmartQueueState {
   checkAndReplenish: (availableTracks: UnifiedTrack[]) => Promise<void>;
   fetchMoreTracks: (availableTracks: UnifiedTrack[]) => Promise<UnifiedTrack[]>;
   recordTrackPlayed: (track: UnifiedTrack) => void;
+  determineTrackSource: (track: UnifiedTrack, currentTrack: UnifiedTrack | null) => QueueSource;
+
+  // Actions - Queue Source Tracking
+  setQueueSource: (trackId: string, source: QueueSource) => void;
+  getQueueSource: (trackId: string) => QueueSource | undefined;
+  clearQueueSources: () => void;
 
   // Actions - Session
   clearSession: () => void;
@@ -139,6 +180,49 @@ const SESSION_TIMEOUT_MS = 4 * 60 * 60 * 1000; // 4 hours
 // ============================================
 // Helper Functions
 // ============================================
+
+/**
+ * Normalize a title for comparison (lowercase, remove common suffixes/prefixes)
+ */
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/\s*\(.*?\)\s*/g, '') // Remove parenthetical content (remix, live, etc.)
+    .replace(/\s*\[.*?\]\s*/g, '') // Remove bracketed content
+    .replace(/\s*-\s*(remaster|remix|live|acoustic|demo|radio edit|extended|original).*$/i, '')
+    .replace(/^(the|a|an)\s+/i, '') // Remove leading articles
+    .replace(/[^\w\s]/g, '') // Remove punctuation
+    .replace(/\s+/g, ' ') // Normalize whitespace
+    .trim();
+}
+
+/**
+ * Check if two titles are too similar (likely same song)
+ */
+function areTitlesTooSimilar(title1: string, title2: string): boolean {
+  const norm1 = normalizeTitle(title1);
+  const norm2 = normalizeTitle(title2);
+
+  // Exact match after normalization
+  if (norm1 === norm2) return true;
+
+  // One contains the other (e.g., "Flagpole" vs "Flagpole Sitta")
+  if (norm1.includes(norm2) || norm2.includes(norm1)) {
+    // Only if the shorter one is at least 5 chars (avoid matching "I" in everything)
+    const shorter = norm1.length < norm2.length ? norm1 : norm2;
+    if (shorter.length >= 5) return true;
+  }
+
+  // Check word overlap - if most words match, it's too similar
+  const words1 = norm1.split(' ').filter(w => w.length > 2);
+  const words2 = norm2.split(' ').filter(w => w.length > 2);
+  if (words1.length === 0 || words2.length === 0) return false;
+
+  const commonWords = words1.filter(w => words2.includes(w));
+  const overlapRatio = commonWords.length / Math.min(words1.length, words2.length);
+
+  return overlapRatio >= 0.8; // 80% word overlap = too similar
+}
 
 /**
  * Apply diversity filter to avoid too many tracks from same artist
@@ -349,6 +433,7 @@ export const useSmartQueueStore = create<SmartQueueState>()(
       config: DEFAULT_CONFIG,
       radioConfig: DEFAULT_RADIO_CONFIG,
       pendingCandidates: [],
+      queueSources: {},
 
       // ==========================================
       // Mode Actions
@@ -470,17 +555,26 @@ export const useSmartQueueStore = create<SmartQueueState>()(
             const newTracks = await state.fetchMoreTracks(availableTracks);
 
             if (newTracks.length > 0) {
-              // Add to queue
-              newTracks.forEach(track => playerStore.addToQueue(track));
+              const currentTrack = playerStore.currentTrack;
 
-              set({
+              // Add to queue and track sources
+              const newSources: Record<string, QueueSource> = {};
+              newTracks.forEach(track => {
+                playerStore.addToQueue(track);
+                // Determine and store source
+                const source = state.determineTrackSource(track, currentTrack);
+                newSources[track.id] = source;
+              });
+
+              set(prev => ({
                 isAutoQueueFetching: false,
                 lastAutoQueueFetch: Date.now(),
                 autoQueueError: null,
-                consecutiveFailures: 0
-              });
+                consecutiveFailures: 0,
+                queueSources: { ...prev.queueSources, ...newSources }
+              }));
 
-              console.log('[SmartQueue] Added', newTracks.length, 'tracks to queue');
+              console.log('[SmartQueue] Added', newTracks.length, 'tracks to queue with source tracking');
             } else {
               set({
                 isAutoQueueFetching: false,
@@ -726,15 +820,46 @@ export const useSmartQueueStore = create<SmartQueueState>()(
 
         // Deduplicate and filter
         const seen = new Set<string>();
+        const seenTitles: string[] = []; // Track normalized titles to avoid similar songs
+
+        // Add current track title to avoid recommending same song
+        if (currentTrack?.title) {
+          seenTitles.push(normalizeTitle(currentTrack.title));
+        }
+
+        // Also add recent queue titles
+        const recentQueueTitles = playerStore.queue
+          .slice(Math.max(0, playerStore.queueIndex - 3), playerStore.queueIndex + 1)
+          .map(t => t.title)
+          .filter(Boolean);
+        recentQueueTitles.forEach(title => {
+          const norm = normalizeTitle(title);
+          if (!seenTitles.includes(norm)) seenTitles.push(norm);
+        });
+
         candidates = candidates.filter(track => {
           if (!track?.id) return false;
           if (seen.has(track.id)) return false;
           if (excludeIds.has(track.id)) return false;
+
+          // Check title similarity - avoid same song with different ID
+          const normTitle = normalizeTitle(track.title);
+          const isTooSimilar = seenTitles.some(existingTitle =>
+            areTitlesTooSimilar(track.title, existingTitle) ||
+            normTitle === existingTitle
+          );
+
+          if (isTooSimilar) {
+            console.log(`[SmartQueue] Filtered out similar title: "${track.title}"`);
+            return false;
+          }
+
           seen.add(track.id);
+          seenTitles.push(normTitle);
           return true;
         });
 
-        console.log(`[SmartQueue] ${candidates.length} unique candidates after deduplication`);
+        console.log(`[SmartQueue] ${candidates.length} unique candidates after deduplication + title filtering`);
 
         if (candidates.length === 0) {
           console.warn('[SmartQueue] No candidates available for auto-queue');
@@ -896,6 +1021,125 @@ export const useSmartQueueStore = create<SmartQueueState>()(
         });
       },
 
+      /**
+       * Determine why a track was added to the queue
+       */
+      determineTrackSource: (track, currentTrack) => {
+        const state = get();
+        const { mode, radioSeed } = state;
+        const libraryStore = useLibraryStore.getState();
+        const now = Date.now();
+
+        // Radio mode - check seed type
+        if (mode === 'radio' && radioSeed) {
+          // Check if track is from seed artist
+          if (radioSeed.type === 'artist' && track.artists.some(a =>
+            a.id === radioSeed.id || a.name.toLowerCase() === radioSeed.name.toLowerCase()
+          )) {
+            return {
+              type: 'artist' as QueueSourceType,
+              label: `More from ${radioSeed.name}`,
+              context: radioSeed.name,
+              timestamp: now,
+              seedTrackId: radioSeed.id
+            };
+          }
+
+          // Genre radio
+          if (radioSeed.type === 'genre') {
+            return {
+              type: 'genre' as QueueSourceType,
+              label: `${radioSeed.name} radio`,
+              context: radioSeed.name,
+              timestamp: now
+            };
+          }
+
+          // Track radio
+          if (radioSeed.type === 'track') {
+            return {
+              type: 'similar' as QueueSourceType,
+              label: `Similar to ${radioSeed.name}`,
+              context: radioSeed.name,
+              timestamp: now,
+              seedTrackId: radioSeed.id
+            };
+          }
+
+          // Generic radio
+          return {
+            type: 'radio' as QueueSourceType,
+            label: `${radioSeed.name} Radio`,
+            context: radioSeed.name,
+            timestamp: now
+          };
+        }
+
+        // Check if from user's liked tracks
+        if (libraryStore.isLiked(track.id)) {
+          return {
+            type: 'liked' as QueueSourceType,
+            label: 'From your Likes',
+            timestamp: now
+          };
+        }
+
+        // Check artist match with current track
+        if (currentTrack) {
+          const matchingArtist = track.artists.find(a =>
+            currentTrack.artists.some(ca =>
+              ca.name.toLowerCase() === a.name.toLowerCase() || ca.id === a.id
+            )
+          );
+          if (matchingArtist) {
+            return {
+              type: 'artist' as QueueSourceType,
+              label: `More from ${matchingArtist.name}`,
+              context: matchingArtist.name,
+              timestamp: now,
+              seedTrackId: currentTrack.id
+            };
+          }
+
+          // Check album match
+          if (currentTrack.album?.id && track.album?.id === currentTrack.album.id) {
+            return {
+              type: 'album' as QueueSourceType,
+              label: `From ${currentTrack.album.title}`,
+              context: currentTrack.album.title,
+              timestamp: now,
+              seedTrackId: currentTrack.id
+            };
+          }
+
+          // Check genre match
+          const trackGenres = track.genres?.map(g => g.toLowerCase()) || [];
+          const currentGenres = currentTrack.genres?.map(g => g.toLowerCase()) || [];
+          if (trackGenres.length && currentGenres.length) {
+            const sharedGenre = currentTrack.genres?.find(g =>
+              trackGenres.includes(g.toLowerCase())
+            );
+            if (sharedGenre) {
+              return {
+                type: 'genre' as QueueSourceType,
+                label: `${sharedGenre} vibes`,
+                context: sharedGenre,
+                timestamp: now,
+                seedTrackId: currentTrack.id
+              };
+            }
+          }
+        }
+
+        // Default: ML recommendation
+        return {
+          type: 'ml' as QueueSourceType,
+          label: 'Recommended for you',
+          timestamp: now,
+          seedTrackId: currentTrack?.id
+        };
+      },
+
       // ==========================================
       // Session Actions
       // ==========================================
@@ -919,6 +1163,24 @@ export const useSmartQueueStore = create<SmartQueueState>()(
         if (timeSinceStart > SESSION_TIMEOUT_MS) {
           get().clearSession();
         }
+      },
+
+      // ==========================================
+      // Queue Source Tracking Actions
+      // ==========================================
+
+      setQueueSource: (trackId, source) => {
+        set(state => ({
+          queueSources: { ...state.queueSources, [trackId]: source }
+        }));
+      },
+
+      getQueueSource: (trackId) => {
+        return get().queueSources[trackId];
+      },
+
+      clearQueueSources: () => {
+        set({ queueSources: {} });
       },
 
       // ==========================================
@@ -987,8 +1249,45 @@ export function useAutoQueueStatus() {
 }
 
 /**
+ * Get queue sources for all tracks
+ */
+export function useQueueSources() {
+  return useSmartQueueStore(state => state.queueSources);
+}
+
+/**
+ * Get source for a specific track
+ */
+export function useTrackSource(trackId: string | undefined) {
+  return useSmartQueueStore(state =>
+    trackId ? state.queueSources[trackId] : undefined
+  );
+}
+
+/**
  * Get the smart queue store (for non-React contexts)
  */
 export function getSmartQueueStore() {
   return useSmartQueueStore.getState();
 }
+
+// ============================================
+// Queue Source Legend (for UI)
+// ============================================
+
+export const QUEUE_SOURCE_LEGEND: Record<QueueSourceType, { label: string; color: string; description: string }> = {
+  manual: { label: 'Added by you', color: 'var(--text-primary)', description: 'You added this track' },
+  artist: { label: 'Artist', color: '#a78bfa', description: 'Same or similar artist' },
+  album: { label: 'Album', color: '#f472b6', description: 'From the same album' },
+  genre: { label: 'Genre', color: '#60a5fa', description: 'Matches your genre' },
+  similar: { label: 'Similar', color: '#34d399', description: 'Similar sound/style' },
+  radio: { label: 'Radio', color: '#fbbf24', description: 'From your radio station' },
+  mood: { label: 'Mood', color: '#fb923c', description: 'Matches current mood' },
+  discovery: { label: 'Discovery', color: '#a3e635', description: 'New music to explore' },
+  trending: { label: 'Trending', color: '#f43f5e', description: 'Popular right now' },
+  search: { label: 'Search', color: '#8b5cf6', description: 'From your searches' },
+  liked: { label: 'Liked', color: '#ec4899', description: 'From your Likes' },
+  playlist: { label: 'Playlist', color: '#06b6d4', description: 'From your playlists' },
+  ml: { label: 'For You', color: 'var(--accent)', description: 'ML recommended' },
+  auto: { label: 'Auto', color: 'var(--text-muted)', description: 'Auto-queued' }
+};

@@ -20,7 +20,6 @@ import type { UnifiedTrack } from '@audiio/core';
 export interface MLServiceConfig {
   storagePath?: string;
   enableAutoTraining?: boolean;
-  algorithmId?: string;
 }
 
 export interface LibraryDataProvider {
@@ -96,15 +95,11 @@ class MLService {
       const storagePath = config.storagePath || path.join(app.getPath('userData'), 'ml-data');
       this.storage = new NodeStorage(storagePath);
 
-      // Get or create engine
+      // Get or create engine (core algorithm is always available)
       this.engine = getMLEngine({
-        defaultAlgorithmId: config.algorithmId || 'audiio-algo',
-        autoInitialize: false, // We'll initialize after registering algorithms
+        autoInitialize: false,
         enableAutoTraining: config.enableAutoTraining ?? true,
       });
-
-      // Storage is configured via the engine's internal components
-      // Algorithms are registered via the plugin system, not hardcoded
 
       // Initialize the engine
       await this.engine.initialize();
@@ -160,11 +155,12 @@ class MLService {
   }
 
   /**
-   * Check if algorithm is loaded
+   * Check if algorithm is loaded (core algorithm is always available when initialized)
    */
   isAlgorithmLoaded(): boolean {
     if (!this.engine) return false;
-    return this.engine.getActiveAlgorithm() !== null;
+    // Core algorithm is always available, or a plugin may be active
+    return this.engine.hasCoreAlgorithm() || this.engine.getActiveAlgorithm() !== null;
   }
 
   // ============================================================================
@@ -293,12 +289,14 @@ class MLService {
       return idleStatus;
     }
 
+    // Check for plugin algorithm first, then core algorithm
     const active = this.engine.getActiveAlgorithm();
-    if (!active) {
-      return idleStatus;
+    if (active) {
+      return this.engine.getTrainingStatus(active.manifest.id) || idleStatus;
     }
 
-    return this.engine.getTrainingStatus(active.manifest.id) || idleStatus;
+    // Fall back to core algorithm training status
+    return this.engine.getCoreTrainingStatus() || idleStatus;
   }
 
   // ============================================================================

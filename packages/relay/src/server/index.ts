@@ -188,15 +188,36 @@ export class RelayServer {
   private handleRegister(ws: WebSocket, client: ConnectedClient, message: RegisterMessage): void {
     const { publicKey, requestedCode } = message.payload;
 
-    // Check if requesting a specific code (reconnection)
+    // Check if requesting a specific code (for persistent server identity)
     let code: string;
-    if (requestedCode && this.rooms.has(requestedCode)) {
-      const existingRoom = this.rooms.get(requestedCode)!;
-      // Verify it's the same desktop (would need auth in production)
-      code = requestedCode;
-      // Update the desktop connection
-      existingRoom.desktopId = client.id;
-      existingRoom.desktopPublicKey = publicKey;
+    if (requestedCode) {
+      const normalizedRequestedCode = normalizeCode(requestedCode);
+
+      if (this.rooms.has(normalizedRequestedCode)) {
+        // Room exists - update desktop connection (reconnection)
+        const existingRoom = this.rooms.get(normalizedRequestedCode)!;
+        code = normalizedRequestedCode;
+        // Update the desktop connection
+        existingRoom.desktopId = client.id;
+        existingRoom.desktopPublicKey = publicKey;
+        existingRoom.expiresAt = Date.now() + this.config.codeExpiryMs;
+        console.log(`[Relay] Desktop reconnected to existing room: ${code}`);
+      } else {
+        // Room doesn't exist - create with requested code (Plex-like persistent code)
+        code = normalizedRequestedCode;
+
+        const room: RelayRoom = {
+          code,
+          desktopId: client.id,
+          desktopPublicKey: publicKey,
+          peers: new Map(),
+          createdAt: Date.now(),
+          expiresAt: Date.now() + this.config.codeExpiryMs
+        };
+
+        this.rooms.set(code, room);
+        console.log(`[Relay] Desktop registered with persistent code: ${code}`);
+      }
     } else {
       // Generate new unique code
       do {

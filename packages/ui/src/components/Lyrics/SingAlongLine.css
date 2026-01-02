@@ -176,12 +176,12 @@
   0%, 100% {
     opacity: 0.3;
     transform: scale(1);
-    filter: drop-shadow(0 0 4px var(--sal-glow-color));
+    text-shadow: 0 0 4px var(--sal-glow-color);
   }
   50% {
     opacity: 0.6;
     transform: scale(1.1);
-    filter: drop-shadow(0 0 12px var(--sal-glow-strong));
+    text-shadow: 0 0 12px var(--sal-glow-strong);
   }
 }
 
@@ -238,9 +238,9 @@
   display: inline-block;
   white-space: pre;
 
-  /* Spring physics for state transitions */
+  /* Spring physics for state transitions - text-shadow is GPU-composited */
   transition:
-    filter 0.3s var(--sal-spring-soft),
+    text-shadow 0.3s var(--sal-spring-soft),
     transform 0.3s var(--sal-spring-soft);
 }
 
@@ -282,8 +282,9 @@
 .sal-word--active .sal-word__fill {
   clip-path: inset(0 100% 0 0);
   will-change: clip-path;
+  /* CRITICAL: Fill uses LINEAR timing for accurate word-to-visual sync */
   animation:
-    word-fill-gradient var(--word-duration, 500ms) var(--sal-spring-soft) forwards,
+    word-fill-linear var(--word-duration, 500ms) linear forwards,
     word-glow-in 0.2s var(--sal-spring-ease) forwards;
 }
 
@@ -293,13 +294,10 @@
   animation: none;
 }
 
-/* Word fill animation with slight overshoot for spring feel */
-@keyframes word-fill-gradient {
+/* Linear fill animation - accurate timing that matches word duration */
+@keyframes word-fill-linear {
   0% {
     clip-path: inset(0 100% 0 0);
-  }
-  85% {
-    clip-path: inset(0 -2% 0 0);
   }
   100% {
     clip-path: inset(0 0% 0 0);
@@ -334,30 +332,30 @@
 }
 
 .sal-word--next {
-  /* Subtle pre-glow and micro scale */
-  filter: drop-shadow(0 0 6px var(--sal-glow-color));
+  /* Subtle pre-glow and micro scale - text-shadow is GPU-composited */
+  text-shadow: 0 0 6px var(--sal-glow-color);
   transform: scale(1.02);
 }
 
 /* Active word - being sung */
 .sal-word--active {
-  /* Soft glow while singing */
-  filter: drop-shadow(0 0 14px var(--sal-glow-color));
+  /* Soft glow while singing - text-shadow is GPU-composited */
+  text-shadow: 0 0 14px var(--sal-glow-color);
   transform: scale(1.04);
   animation: active-word-pulse 0.3s var(--sal-spring-snap);
 }
 
 @keyframes active-word-pulse {
   0% {
-    filter: drop-shadow(0 0 0px transparent);
+    text-shadow: 0 0 0px transparent;
     transform: scale(0.98);
   }
   40% {
-    filter: drop-shadow(0 0 20px var(--sal-glow-strong));
+    text-shadow: 0 0 20px var(--sal-glow-strong);
     transform: scale(1.06);
   }
   100% {
-    filter: drop-shadow(0 0 14px var(--sal-glow-color));
+    text-shadow: 0 0 14px var(--sal-glow-color);
     transform: scale(1.04);
   }
 }
@@ -373,19 +371,19 @@
 
 /* Smooth exit - word just finished singing */
 .sal-word--sung {
-  /* Gentle glow fadeout with spring */
-  filter: drop-shadow(0 0 8px var(--sal-glow-color));
+  /* Gentle glow fadeout - text-shadow is GPU-composited */
+  text-shadow: 0 0 8px var(--sal-glow-color);
   transform: scale(1);
   animation: word-sung-exit 0.4s var(--sal-spring-soft);
 }
 
 @keyframes word-sung-exit {
   0% {
-    filter: drop-shadow(0 0 14px var(--sal-glow-color));
+    text-shadow: 0 0 14px var(--sal-glow-color);
     transform: scale(1.04);
   }
   100% {
-    filter: drop-shadow(0 0 8px var(--sal-glow-color));
+    text-shadow: 0 0 8px var(--sal-glow-color);
     transform: scale(1);
   }
 }
@@ -403,11 +401,11 @@
 
 @keyframes held-note-breathe {
   0%, 100% {
-    filter: drop-shadow(0 0 12px var(--sal-glow-color));
+    text-shadow: 0 0 12px var(--sal-glow-color);
     transform: scale(1.03);
   }
   50% {
-    filter: drop-shadow(0 0 20px var(--sal-glow-strong));
+    text-shadow: 0 0 20px var(--sal-glow-strong);
     transform: scale(1.06);
   }
 }
@@ -421,27 +419,27 @@
 
 @keyframes held-note-undulate {
   0%, 100% {
-    filter:
-      drop-shadow(0 0 10px var(--sal-glow-color))
-      drop-shadow(0 0 20px var(--sal-gradient-glow));
+    text-shadow:
+      0 0 10px var(--sal-glow-color),
+      0 0 20px var(--sal-gradient-glow);
     transform: scale(1.03) translateY(0);
   }
   25% {
-    filter:
-      drop-shadow(0 0 18px var(--sal-glow-strong))
-      drop-shadow(0 0 30px var(--sal-gradient-glow));
+    text-shadow:
+      0 0 18px var(--sal-glow-strong),
+      0 0 30px var(--sal-gradient-glow);
     transform: scale(1.07) translateY(-1px);
   }
   50% {
-    filter:
-      drop-shadow(0 0 14px var(--sal-glow-color))
-      drop-shadow(0 0 25px var(--sal-gradient-glow));
+    text-shadow:
+      0 0 14px var(--sal-glow-color),
+      0 0 25px var(--sal-gradient-glow);
     transform: scale(1.05) translateY(0);
   }
   75% {
-    filter:
-      drop-shadow(0 0 20px var(--sal-glow-strong))
-      drop-shadow(0 0 32px var(--sal-gradient-glow));
+    text-shadow:
+      0 0 20px var(--sal-glow-strong),
+      0 0 32px var(--sal-gradient-glow);
     transform: scale(1.08) translateY(-1px);
   }
 }
@@ -480,19 +478,19 @@
   color: var(--text-primary);
 }
 
-/* Subtle glow effects for sidebar */
+/* Subtle glow effects for sidebar - text-shadow is GPU-composited */
 .lyrics-panel-line .sal-word--active {
-  filter: drop-shadow(0 0 6px rgba(128, 128, 128, 0.2));
+  text-shadow: 0 0 6px rgba(128, 128, 128, 0.2);
   transform: scale(1.02);
 }
 
 .lyrics-panel-line .sal-word--sung {
-  filter: drop-shadow(0 0 3px rgba(128, 128, 128, 0.1));
+  text-shadow: 0 0 3px rgba(128, 128, 128, 0.1);
   transform: scale(1);
 }
 
 .lyrics-panel-line .sal-word--next {
-  filter: none;
+  text-shadow: none;
   transform: scale(1.01);
 }
 
@@ -505,22 +503,22 @@
 
 @keyframes sidebar-held-breathe {
   0%, 100% {
-    filter: drop-shadow(0 0 4px rgba(128, 128, 128, 0.15));
+    text-shadow: 0 0 4px rgba(128, 128, 128, 0.15);
     transform: scale(1.02);
   }
   50% {
-    filter: drop-shadow(0 0 8px rgba(128, 128, 128, 0.25));
+    text-shadow: 0 0 8px rgba(128, 128, 128, 0.25);
     transform: scale(1.04);
   }
 }
 
 /* Active line in sidebar */
 .lyrics-panel-line.active .sal-word--active {
-  filter: drop-shadow(0 0 8px rgba(128, 128, 128, 0.25));
+  text-shadow: 0 0 8px rgba(128, 128, 128, 0.25);
 }
 
 .lyrics-panel-line.active .sal-word--sung {
-  filter: drop-shadow(0 0 4px rgba(128, 128, 128, 0.15));
+  text-shadow: 0 0 4px rgba(128, 128, 128, 0.15);
 }
 
 /* ============================================

@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePlayerStore } from '../../stores/player-store';
 import { useTrackContextMenu } from '../../contexts/ContextMenuContext';
 import { TrackRow } from '../TrackRow/TrackRow';
+import { useArtwork } from '../../hooks/useArtwork';
 import {
   QueueIcon,
   MusicNoteIcon,
@@ -48,7 +49,12 @@ export const QueueView: React.FC<QueueViewProps> = ({ onClose }) => {
     setQueue(newQueue, queueIndex);
   };
 
-  const artworkUrl = currentTrack?.artwork?.medium ?? currentTrack?.album?.artwork?.medium;
+  const { artworkUrl } = useArtwork(currentTrack);
+  const [artworkError, setArtworkError] = useState(false);
+
+  useEffect(() => {
+    setArtworkError(false);
+  }, [currentTrack?.id]);
 
   return (
     <div className="queue-view">
@@ -71,8 +77,12 @@ export const QueueView: React.FC<QueueViewProps> = ({ onClose }) => {
             <h3 className="queue-section-title">Now Playing</h3>
             <div className="queue-now-playing">
               <div className="queue-now-playing-artwork">
-                {artworkUrl ? (
-                  <img src={artworkUrl} alt={currentTrack.title} />
+                {artworkUrl && !artworkError ? (
+                  <img
+                    src={artworkUrl}
+                    alt={currentTrack.title}
+                    onError={() => setArtworkError(true)}
+                  />
                 ) : (
                   <div className="queue-artwork-placeholder">
                     <MusicNoteIcon size={32} />

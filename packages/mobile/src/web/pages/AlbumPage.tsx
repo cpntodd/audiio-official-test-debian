@@ -2,24 +2,22 @@
  * AlbumPage - Album detail view for mobile
  *
  * Features:
- * - Hero header with artwork
+ * - Parallax sticky header with artwork
  * - Album info (artist, year, track count)
  * - Full track list
  * - Play/Shuffle controls
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { usePlaybackControls, useQueueControls } from '../stores/player-store';
 import { tunnelFetch } from '../stores/auth-store';
 import { TrackList } from '../components/TrackList';
-import { PullToRefresh } from '../components/PullToRefresh';
+import { StickyHeader } from '../components/StickyHeader';
 import { triggerHaptic } from '../utils/haptics';
 import {
-  ChevronLeftIcon,
   PlayIcon,
   ShuffleIcon,
-  MusicNoteIcon,
   SpinnerIcon
 } from '@audiio/icons';
 import styles from './AlbumPage.module.css';
@@ -116,108 +114,107 @@ export function AlbumPage() {
     return `${minutes} min`;
   };
 
+  // Build subtitle from artist name
+  const subtitle = album?.artist || '';
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.loading}>
+          <SpinnerIcon size={32} />
+          <p>Loading album...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.error}>
+          <p>{error}</p>
+          <button onClick={fetchAlbum}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.page}>
-      {/* Header */}
-      <header className={styles.header}>
-        <button className={styles.backButton} onClick={() => navigate(-1)}>
-          <ChevronLeftIcon size={24} />
-        </button>
-      </header>
+      <StickyHeader
+        artwork={album?.artwork}
+        title={album?.title || albumName}
+        subtitle={subtitle}
+        expandedHeight={340}
+      >
+        {album && (
+          <div className={styles.content}>
+            {/* Artist Link & Meta */}
+            <div className={styles.metaSection}>
+              <button
+                className={styles.artistLink}
+                onClick={handleArtistClick}
+                disabled={!album.artistId}
+              >
+                {album.artist}
+              </button>
 
-      <PullToRefresh onRefresh={fetchAlbum} disabled={isLoading}>
-        <div className={styles.content}>
-          {isLoading ? (
-            <div className={styles.loading}>
-              <SpinnerIcon size={32} />
-              <p>Loading album...</p>
-            </div>
-          ) : error ? (
-            <div className={styles.error}>
-              <p>{error}</p>
-              <button onClick={fetchAlbum}>Retry</button>
-            </div>
-          ) : album ? (
-            <>
-              {/* Hero Section */}
-              <div className={styles.hero}>
-                <div className={styles.artwork}>
-                  {album.artwork ? (
-                    <img src={album.artwork} alt={album.title} />
-                  ) : (
-                    <div className={styles.artworkPlaceholder}>
-                      <MusicNoteIcon size={64} />
-                    </div>
-                  )}
-                </div>
-
-                <h1 className={styles.title}>{album.title}</h1>
-
-                {/* Artist (clickable) */}
-                <button
-                  className={styles.artistLink}
-                  onClick={handleArtistClick}
-                  disabled={!album.artistId}
-                >
-                  {album.artist}
-                </button>
-
-                {/* Meta info */}
-                <div className={styles.meta}>
-                  {album.year && <span>{album.year}</span>}
-                  {album.trackCount && (
-                    <>
-                      <span className={styles.dot}>•</span>
-                      <span>{album.trackCount} songs</span>
-                    </>
-                  )}
-                  {album.duration && (
-                    <>
-                      <span className={styles.dot}>•</span>
-                      <span>{formatDuration(album.duration)}</span>
-                    </>
-                  )}
-                </div>
-
-                {/* Action Buttons */}
-                <div className={styles.actions}>
-                  <button
-                    className={styles.playButton}
-                    onClick={handlePlayAll}
-                    disabled={!album.tracks?.length}
-                  >
-                    <PlayIcon size={20} />
-                    Play
-                  </button>
-                  <button
-                    className={styles.shuffleButton}
-                    onClick={handleShuffle}
-                    disabled={!album.tracks?.length}
-                  >
-                    <ShuffleIcon size={18} />
-                    Shuffle
-                  </button>
-                </div>
-              </div>
-
-              {/* Track List */}
-              {album.tracks && album.tracks.length > 0 && (
-                <section className={styles.section}>
-                  <TrackList tracks={album.tracks} showIndex />
-                </section>
-              )}
-
-              {/* Album info footer */}
-              <div className={styles.footer}>
-                {album.year && (
-                  <p className={styles.releaseDate}>Released {album.year}</p>
+              <div className={styles.meta}>
+                {album.year && <span>{album.year}</span>}
+                {album.trackCount && (
+                  <>
+                    <span className={styles.dot}>•</span>
+                    <span>{album.trackCount} songs</span>
+                  </>
                 )}
-                <p className={styles.source}>via {album.source}</p>
+                {album.duration && (
+                  <>
+                    <span className={styles.dot}>•</span>
+                    <span>{formatDuration(album.duration)}</span>
+                  </>
+                )}
               </div>
-            </>
-          ) : null}
-        </div>
-      </PullToRefresh>
+            </div>
+
+            {/* Action Buttons */}
+            <div className={styles.actions}>
+              <button
+                className={styles.playButton}
+                onClick={handlePlayAll}
+                disabled={!album.tracks?.length}
+              >
+                <PlayIcon size={20} />
+                Play
+              </button>
+              <button
+                className={styles.shuffleButton}
+                onClick={handleShuffle}
+                disabled={!album.tracks?.length}
+              >
+                <ShuffleIcon size={18} />
+                Shuffle
+              </button>
+            </div>
+
+            {/* Track List */}
+            {album.tracks && album.tracks.length > 0 && (
+              <section className={styles.section}>
+                <TrackList tracks={album.tracks} showIndex />
+              </section>
+            )}
+
+            {/* Album info footer */}
+            <div className={styles.footer}>
+              {album.year && (
+                <p className={styles.releaseDate}>Released {album.year}</p>
+              )}
+              <p className={styles.source}>via {album.source}</p>
+            </div>
+          </div>
+        )}
+      </StickyHeader>
     </div>
   );
 }

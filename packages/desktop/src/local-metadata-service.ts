@@ -11,16 +11,62 @@ import * as https from 'https';
 import * as http from 'http';
 
 // Dynamic imports for ESM modules
-let musicMetadata: typeof import('music-metadata') | null = null;
-let NodeID3: typeof import('node-id3') | null = null;
+// We use Function() constructor to create a real ESM import that TypeScript won't transform
+let musicMetadataParseFile: ((filePath: string) => Promise<any>) | null = null;
+let NodeID3: any = null;
 
-async function loadDependencies() {
-  if (!musicMetadata) {
-    musicMetadata = await import('music-metadata');
+// This creates a proper ESM import that bypasses TypeScript's CJS transformation
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
+async function loadMusicMetadata(): Promise<(filePath: string) => Promise<any>> {
+  if (musicMetadataParseFile) {
+    return musicMetadataParseFile;
   }
+
+  try {
+    // Use the dynamic import function that bypasses TypeScript
+    const mm = await dynamicImport('music-metadata');
+
+    // music-metadata exports parseFile directly in v10+
+    if (typeof mm.parseFile === 'function') {
+      musicMetadataParseFile = mm.parseFile;
+      console.log('[LocalMetadata] Loaded music-metadata parseFile successfully');
+      return mm.parseFile;
+    }
+
+    // Check if it's wrapped in default
+    if (mm.default && typeof mm.default.parseFile === 'function') {
+      musicMetadataParseFile = mm.default.parseFile;
+      console.log('[LocalMetadata] Loaded music-metadata parseFile from default export');
+      return mm.default.parseFile;
+    }
+
+    // Log what we got for debugging
+    console.error('[LocalMetadata] music-metadata module structure:', {
+      keys: Object.keys(mm),
+      hasDefault: !!mm.default,
+      defaultKeys: mm.default ? Object.keys(mm.default) : []
+    });
+    throw new Error('Could not find parseFile function in music-metadata module');
+  } catch (e) {
+    console.error('[LocalMetadata] Failed to import music-metadata:', e);
+    throw e;
+  }
+}
+
+async function loadNodeID3(): Promise<any> {
   if (!NodeID3) {
-    NodeID3 = await import('node-id3');
+    try {
+      // Try normal import first (node-id3 supports CJS)
+      const id3Module = await import('node-id3');
+      NodeID3 = id3Module.default || id3Module;
+    } catch {
+      // Fallback to dynamic import
+      const id3Module = await dynamicImport('node-id3');
+      NodeID3 = id3Module.default || id3Module;
+    }
   }
+  return NodeID3;
 }
 
 // Types
@@ -77,10 +123,10 @@ export interface EnrichmentResult {
  * Read metadata from an audio file using music-metadata
  */
 export async function readFileMetadata(filePath: string): Promise<LocalTrackMetadata> {
-  await loadDependencies();
+  const parseFile = await loadMusicMetadata();
 
   try {
-    const metadata = await musicMetadata!.parseFile(filePath);
+    const metadata = await parseFile(filePath);
     const common = metadata.common;
     const format = metadata.format;
 
@@ -127,7 +173,7 @@ export async function writeFileMetadata(
   metadata: Partial<LocalTrackMetadata>,
   artworkUrl?: string
 ): Promise<boolean> {
-  await loadDependencies();
+  const nodeId3 = await loadNodeID3();
 
   const ext = path.extname(filePath).toLowerCase();
   if (ext !== '.mp3') {
@@ -193,7 +239,7 @@ export async function writeFileMetadata(
     }
 
     // Write tags to file
-    const success = NodeID3!.write(tags as any, filePath);
+    const success = nodeId3.write(tags as any, filePath);
     if (success) {
       console.log(`[LocalMetadata] Successfully wrote metadata to ${filePath}`);
       return true;

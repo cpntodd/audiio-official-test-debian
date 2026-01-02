@@ -8,10 +8,12 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { AccessManager } from '../services/access-manager';
 import type { SessionManager } from '../services/session-manager';
+import type { PairingService } from '../services/pairing-service';
 
 interface RouteContext {
   accessManager: AccessManager;
   sessionManager: SessionManager;
+  pairingService?: PairingService;
   orchestrators?: {
     search?: any;
     trackResolver?: any;
@@ -131,12 +133,38 @@ function transformAlbum(album: any): any {
 }
 
 /**
- * Transform track to have flat artwork
+ * Transform track to have flat artwork and ensure artists array exists
  */
 function transformTrack(track: any): any {
   if (!track) return track;
+
+  // Ensure artists array exists with proper format
+  let artists = track.artists;
+  if (!artists || !Array.isArray(artists) || artists.length === 0) {
+    // Try to extract artist info from various possible sources
+    if (track.artist) {
+      // Single artist string or object
+      artists = typeof track.artist === 'string'
+        ? [{ id: 'unknown', name: track.artist }]
+        : [track.artist];
+    } else if (track.artistName) {
+      artists = [{ id: 'unknown', name: track.artistName }];
+    } else if (track.album?.artist) {
+      artists = typeof track.album.artist === 'string'
+        ? [{ id: 'unknown', name: track.album.artist }]
+        : [track.album.artist];
+    } else if (track._meta?.artist) {
+      artists = [{ id: 'unknown', name: track._meta.artist }];
+    }
+  }
+
+  // Ensure source is set for playback
+  const source = track.source || track._meta?.source || track._meta?.metadataProvider || 'local';
+
   return {
     ...track,
+    artists: artists || [],
+    source,
     artwork: extractArtwork(track.artwork),
     album: track.album ? {
       ...track.album,
@@ -163,7 +191,7 @@ function transformCharts(charts: { tracks?: any[]; artists?: any[]; albums?: any
 }
 
 export function registerApiRoutes(fastify: FastifyInstance, context: RouteContext) {
-  const { accessManager, sessionManager, orchestrators } = context;
+  const { accessManager, sessionManager, pairingService, orchestrators } = context;
 
   // Health check (public)
   fastify.get('/api/health', async () => {
@@ -404,6 +432,215 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     }
   });
 
+  // Discover sections - Structured sections for mobile home page
+  fastify.get('/api/discover/sections', async (_request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const sections: Array<{
+        id: string;
+        type: string;
+        title: string;
+        subtitle?: string;
+        tracks?: any[];
+        artists?: any[];
+        albums?: any[];
+        isPluginPowered?: boolean;
+        pluginName?: string;
+      }> = [];
+
+      // Recently played section
+      if (orchestrators?.libraryBridge?.getRecentlyPlayed) {
+        try {
+          const recentTracks = await orchestrators.libraryBridge.getRecentlyPlayed(10);
+          if (recentTracks && recentTracks.length > 0) {
+            sections.push({
+              id: 'recently-played',
+              type: 'recently-played',
+              title: 'Recently Played',
+              subtitle: 'Pick up where you left off',
+              tracks: recentTracks.map(transformTrack)
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get recently played:', e);
+        }
+      }
+
+      // Quick picks section
+      if (orchestrators?.libraryBridge?.getQuickPicks) {
+        try {
+          const quickPicks = await orchestrators.libraryBridge.getQuickPicks(10);
+          if (quickPicks && quickPicks.length > 0) {
+            sections.push({
+              id: 'quick-picks',
+              type: 'quick-picks',
+              title: 'Quick Picks',
+              subtitle: 'Based on your listening',
+              tracks: quickPicks.map(transformTrack)
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get quick picks:', e);
+        }
+      }
+
+      // For You / Personalized recommendations
+      if (orchestrators?.libraryBridge?.getForYou) {
+        try {
+          const forYou = await orchestrators.libraryBridge.getForYou(12);
+          if (forYou && forYou.length > 0) {
+            sections.push({
+              id: 'for-you',
+              type: 'recommended',
+              title: 'For You',
+              subtitle: 'Personalized picks',
+              tracks: forYou.map(transformTrack)
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get for you:', e);
+        }
+      }
+
+      // ML-powered recommendations section
+      if (orchestrators?.mlService?.isAlgorithmLoaded?.()) {
+        try {
+          const recommendations = await orchestrators.mlService.getRecommendations(12);
+          if (recommendations && recommendations.length > 0) {
+            sections.push({
+              id: 'ml-recommendations',
+              type: 'ml-powered',
+              title: 'Discover Weekly',
+              subtitle: 'AI-curated for you',
+              tracks: recommendations.map(transformTrack),
+              isPluginPowered: true,
+              pluginName: 'ML Algorithm'
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get ML recommendations:', e);
+        }
+      }
+
+      // Trending/Charts section
+      if (orchestrators?.metadata?.getCharts) {
+        try {
+          const charts = await orchestrators.metadata.getCharts(12);
+          if (charts.tracks && charts.tracks.length > 0) {
+            sections.push({
+              id: 'trending',
+              type: 'trending',
+              title: 'Trending Now',
+              subtitle: 'What\'s hot',
+              tracks: charts.tracks.map(transformTrack)
+            });
+          }
+          if (charts.artists && charts.artists.length > 0) {
+            sections.push({
+              id: 'popular-artists',
+              type: 'artists',
+              title: 'Popular Artists',
+              artists: charts.artists.map((a: any) => ({
+                ...a,
+                image: a.image || extractArtwork(a.artwork)
+              }))
+            });
+          }
+          if (charts.albums && charts.albums.length > 0) {
+            sections.push({
+              id: 'new-releases',
+              type: 'new-releases',
+              title: 'New Releases',
+              albums: charts.albums.map((a: any) => ({
+                ...a,
+                artwork: extractArtwork(a.artwork)
+              }))
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get charts:', e);
+        }
+      }
+
+      // Mixes section (Daily Mix, Genre Radio, etc.)
+      if (orchestrators?.libraryBridge?.getMixes) {
+        try {
+          const mixes = await orchestrators.libraryBridge.getMixes(6);
+          if (mixes && mixes.length > 0) {
+            sections.push({
+              id: 'mixes',
+              type: 'mixes',
+              title: 'Made For You',
+              subtitle: 'Your personal mixes',
+              tracks: mixes.map(transformTrack)
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get mixes:', e);
+        }
+      }
+
+      // Get sections from registered plugins if available
+      if (orchestrators?.registry?.getHomeSections) {
+        try {
+          const pluginSections = await orchestrators.registry.getHomeSections();
+          if (pluginSections && pluginSections.length > 0) {
+            for (const ps of pluginSections) {
+              sections.push({
+                id: ps.id || `plugin-${sections.length}`,
+                type: ps.type || 'plugin',
+                title: ps.title,
+                subtitle: ps.subtitle,
+                tracks: ps.tracks?.map(transformTrack),
+                artists: ps.artists?.map((a: any) => ({
+                  ...a,
+                  image: a.image || extractArtwork(a.artwork)
+                })),
+                albums: ps.albums?.map((a: any) => ({
+                  ...a,
+                  artwork: extractArtwork(a.artwork)
+                })),
+                isPluginPowered: true,
+                pluginName: ps.pluginName || ps.source
+              });
+            }
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get plugin sections:', e);
+        }
+      }
+
+      // Fallback: If no sections, use search to get some content
+      if (sections.length === 0 && orchestrators?.search) {
+        try {
+          const result = await orchestrators.search.search('popular music', { limit: 12 });
+          const transformed = transformCharts({
+            tracks: result.tracks || [],
+            artists: result.artists || [],
+            albums: result.albums || []
+          });
+
+          if (transformed.tracks.length > 0) {
+            sections.push({
+              id: 'discover-tracks',
+              type: 'trending',
+              title: 'Discover',
+              subtitle: 'Popular tracks',
+              tracks: transformed.tracks
+            });
+          }
+        } catch (e) {
+          console.error('[Mobile API] Failed to get fallback content:', e);
+        }
+      }
+
+      console.log(`[Mobile API] Discover sections: ${sections.length} sections`);
+      return { sections };
+    } catch (error) {
+      console.error('[Mobile API] Discover sections error:', error);
+      return reply.code(500).send({ error: 'Failed to fetch discover sections' });
+    }
+  });
+
   // ========================================
   // Playback Control
   // ========================================
@@ -478,6 +715,37 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
   // ========================================
   // Audio Streaming
   // ========================================
+
+  /**
+   * Resolve stream URL without triggering desktop playback
+   * Used by mobile for local playback mode
+   */
+  fastify.post('/api/stream/resolve', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { track } = request.body as { track: any };
+
+    if (!track) {
+      return reply.code(400).send({ error: 'Track data required' });
+    }
+
+    if (!orchestrators?.trackResolver) {
+      return reply.code(503).send({ error: 'Stream service not available' });
+    }
+
+    try {
+      // Resolve stream URL without starting desktop playback
+      // Use resolveStream method (not resolve)
+      const streamInfo = await orchestrators.trackResolver.resolveStream(track);
+
+      if (!streamInfo?.url) {
+        return reply.code(404).send({ error: 'Stream not found' });
+      }
+
+      return { success: true, streamInfo };
+    } catch (error) {
+      console.error('Stream resolve error:', error);
+      return reply.code(500).send({ error: 'Failed to resolve stream' });
+    }
+  });
 
   fastify.get('/api/stream/:trackId', async (request: FastifyRequest, reply: FastifyReply) => {
     const { trackId } = request.params as { trackId: string };
@@ -918,32 +1186,103 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
 
   fastify.get('/api/access/info', async () => {
     const access = accessManager.getCurrentAccess();
-    if (!access) {
-      return { error: 'No active access configuration' };
-    }
+
+    // Get pairing info from PairingService
+    const pairingCode = pairingService?.getCurrentCode();
 
     return {
-      localUrl: access.localUrl,
-      p2pCode: access.p2pCode,
-      relayCode: access.relayCode,
-      createdAt: access.createdAt,
-      expiresAt: access.expiresAt,
-      hasRemoteAccess: !!access.p2pActive,
-      relayActive: access.relayActive
+      // Pairing code (WORD-WORD-NUMBER format)
+      pairingCode: pairingCode?.code || access?.pairingCode,
+      pairingCodeExpiresAt: pairingCode?.expiresAt,
+      qrCode: pairingCode?.qrCode || access?.qrCode,
+
+      // Local access
+      localUrl: pairingCode?.localUrl || access?.localUrl?.split('?')[0],
+
+      // Remote access (P2P/Relay)
+      p2pCode: access?.p2pCode,
+      relayCode: access?.relayCode,
+      relayUrl: pairingService?.getRelayUrl() || 'wss://audiio-relay.fly.dev',
+      hasRemoteAccess: !!access?.p2pActive,
+      relayActive: access?.relayActive,
+
+      // Metadata
+      createdAt: access?.createdAt,
+      expiresAt: access?.expiresAt
     };
+  });
+
+  // Refresh pairing code
+  fastify.post('/api/access/refresh', async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (pairingService) {
+      const code = await pairingService.refreshCode();
+      if (code) {
+        return {
+          success: true,
+          pairingCode: code.code,
+          expiresAt: code.expiresAt,
+          qrCode: code.qrCode
+        };
+      }
+    }
+
+    // Fallback to legacy
+    const currentAccess = accessManager.getCurrentAccess();
+    if (!currentAccess) {
+      return reply.code(503).send({ error: 'No active access' });
+    }
+
+    const newCode = await accessManager.regeneratePairingCode();
+    return {
+      success: true,
+      pairingCode: newCode
+    };
+  });
+
+  // Get/Set custom relay URL
+  fastify.get('/api/access/relay', async () => {
+    return {
+      url: pairingService?.getRelayUrl() || 'wss://audiio-relay.fly.dev',
+      default: 'wss://audiio-relay.fly.dev'
+    };
+  });
+
+  fastify.post('/api/access/relay', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { url } = request.body as { url: string };
+
+    if (!url) {
+      return reply.code(400).send({ error: 'URL required' });
+    }
+
+    // Validate URL format
+    try {
+      new URL(url);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid URL format' });
+    }
+
+    if (pairingService) {
+      pairingService.setRelayUrl(url);
+      return { success: true, url };
+    }
+
+    return reply.code(503).send({ error: 'Pairing service not available' });
   });
 
   // ========================================
   // Enhanced Authentication (Device-based)
   // ========================================
 
-  // One-time pairing via QR code (no password needed)
-  // This may require desktop approval, so it can take up to 60 seconds
+  // Simplified pairing via WORD-WORD-NUMBER code
+  // Auto-approves immediately - no desktop confirmation needed
   fastify.post('/api/auth/pair', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { pairingCode, deviceName } = request.body as {
-      pairingCode: string;
+    const { code, deviceName } = request.body as {
+      code: string;
       deviceName?: string;
     };
+
+    // Support both 'code' and 'pairingCode' for backwards compatibility
+    const pairingCode = code || (request.body as any).pairingCode;
 
     if (!pairingCode) {
       return reply.code(400).send({ success: false, error: 'Pairing code required' });
@@ -951,23 +1290,53 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
 
     const userAgent = request.headers['user-agent'] || '';
 
-    // Try to pair via accessManager (may return promise if approval required)
-    const resultOrPromise = accessManager.consumePairingCode(pairingCode, userAgent);
+    console.log(`[Auth] Pairing attempt with code: ${pairingCode}`);
 
-    // Handle both sync and async results
+    // Use PairingService if available (new flow)
+    if (pairingService) {
+      // Debug: check if code is valid before pairing
+      const isValid = pairingService.isCodeValid(pairingCode);
+      console.log(`[Auth] Code validation result: ${isValid}`);
+
+      const result = pairingService.pair(pairingCode, {
+        name: deviceName,
+        userAgent
+      });
+
+      if (!result.success) {
+        console.log(`[Auth] Pairing failed: ${result.error}`);
+        return reply.code(401).send({
+          success: false,
+          error: result.error || 'Invalid or expired pairing code'
+        });
+      }
+
+      console.log(`[Auth] Device paired: ${deviceName || 'Unknown'} (${result.deviceId})`);
+      return {
+        success: true,
+        deviceToken: result.deviceToken,
+        deviceId: result.deviceId,
+        localUrl: result.localUrl,
+        // Include server identity for persistent reconnection
+        serverId: result.serverId,
+        serverName: result.serverName,
+        relayCode: result.relayCode,
+        message: 'Device paired successfully'
+      };
+    }
+
+    // Fallback to legacy accessManager flow
+    const resultOrPromise = accessManager.consumePairingCode(pairingCode, userAgent);
     const result = resultOrPromise instanceof Promise ? await resultOrPromise : resultOrPromise;
 
     if (!result.success) {
       return reply.code(401).send({
         success: false,
-        error: result.error || 'Invalid or expired pairing code',
-        requiresApproval: result.requiresApproval
+        error: result.error || 'Invalid or expired pairing code'
       });
     }
 
-    // If we got a device token from the callback, return it
     if (result.deviceToken && result.deviceId) {
-      console.log(`[Auth] Device paired via QR: ${deviceName || 'Unknown'}`);
       return {
         success: true,
         deviceToken: result.deviceToken,
@@ -976,7 +1345,6 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
       };
     }
 
-    // Fallback: no device manager, create a session anyway
     return { success: true, message: 'Connected via pairing code' };
   });
 
@@ -988,6 +1356,12 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
       return reply.code(400).send({ valid: false });
     }
 
+    // Use PairingService if available
+    if (pairingService) {
+      return { valid: pairingService.isCodeValid(code) };
+    }
+
+    // Fallback to legacy
     const valid = accessManager.isPairingCodeValid(code);
     return { valid };
   });
@@ -1040,17 +1414,26 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
       return reply.code(400).send({ success: false, error: 'Device token required' });
     }
 
-    if (!orchestrators?.authManager) {
-      return reply.code(503).send({ success: false, error: 'Device auth not available' });
-    }
-
     try {
-      const result = orchestrators.authManager.validateDeviceToken(deviceToken);
-      if (!result.valid) {
-        return reply.code(401).send({ success: false, error: 'Invalid or expired device token' });
+      // Use PairingService if available
+      if (pairingService) {
+        const result = pairingService.validateDeviceToken(deviceToken);
+        if (!result.valid) {
+          return reply.code(401).send({ success: false, error: 'Invalid or expired device token' });
+        }
+        return { success: true, deviceId: result.deviceId };
       }
 
-      return { success: true, deviceId: result.deviceId };
+      // Fallback to legacy authManager
+      if (orchestrators?.authManager) {
+        const result = orchestrators.authManager.validateDeviceToken(deviceToken);
+        if (!result.valid) {
+          return reply.code(401).send({ success: false, error: 'Invalid or expired device token' });
+        }
+        return { success: true, deviceId: result.deviceId };
+      }
+
+      return reply.code(503).send({ success: false, error: 'Device auth not available' });
     } catch (error) {
       console.error('Device auth error:', error);
       return reply.code(500).send({ success: false, error: 'Authentication failed' });
@@ -1065,21 +1448,34 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
       return reply.code(400).send({ success: false, error: 'Device ID and token required' });
     }
 
-    if (!orchestrators?.authManager) {
-      return reply.code(503).send({ success: false, error: 'Auth service not available' });
-    }
-
     try {
-      const newToken = orchestrators.authManager.refreshDeviceToken(deviceId, token);
-      if (!newToken) {
-        return reply.code(401).send({ success: false, error: 'Invalid credentials' });
+      // Use PairingService if available
+      if (pairingService) {
+        const newToken = pairingService.refreshDeviceToken(deviceId, token);
+        if (!newToken) {
+          return reply.code(401).send({ success: false, error: 'Invalid credentials' });
+        }
+        return {
+          success: true,
+          deviceToken: `${newToken.deviceId}:${newToken.token}`,
+          expiresAt: newToken.expiresAt?.toISOString()
+        };
       }
 
-      return {
-        success: true,
-        deviceToken: `${newToken.deviceId}:${newToken.token}`,
-        expiresAt: newToken.expiresAt?.toISOString()
-      };
+      // Fallback to legacy authManager
+      if (orchestrators?.authManager) {
+        const newToken = orchestrators.authManager.refreshDeviceToken(deviceId, token);
+        if (!newToken) {
+          return reply.code(401).send({ success: false, error: 'Invalid credentials' });
+        }
+        return {
+          success: true,
+          deviceToken: `${newToken.deviceId}:${newToken.token}`,
+          expiresAt: newToken.expiresAt?.toISOString()
+        };
+      }
+
+      return reply.code(503).send({ success: false, error: 'Auth service not available' });
     } catch (error) {
       console.error('Token refresh error:', error);
       return reply.code(500).send({ success: false, error: 'Refresh failed' });
@@ -1090,13 +1486,14 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
   fastify.post('/api/auth/logout', async (request: FastifyRequest, reply: FastifyReply) => {
     const { deviceId } = request.body as { deviceId?: string };
 
-    if (!orchestrators?.authManager) {
-      return { success: true }; // Nothing to do
-    }
-
     try {
       if (deviceId) {
-        orchestrators.authManager.revokeDevice(deviceId);
+        // Use PairingService if available
+        if (pairingService) {
+          pairingService.revokeDevice(deviceId);
+        } else if (orchestrators?.authManager) {
+          orchestrators.authManager.revokeDevice(deviceId);
+        }
       }
       return { success: true };
     } catch (error) {
@@ -1107,12 +1504,16 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
 
   // List authorized devices (desktop management)
   fastify.get('/api/auth/devices', async (_request: FastifyRequest, reply: FastifyReply) => {
-    if (!orchestrators?.authManager) {
-      return { devices: [] };
-    }
-
     try {
-      const devices = orchestrators.authManager.listDevices();
+      let devices: any[] = [];
+
+      // Use PairingService if available
+      if (pairingService) {
+        devices = pairingService.getDevices();
+      } else if (orchestrators?.authManager) {
+        devices = orchestrators.authManager.listDevices();
+      }
+
       return {
         devices: devices.map((d: { id: string; name: string; createdAt: Date; lastAccessAt: Date; expiresAt?: Date | null }) => ({
           id: d.id,
@@ -1132,12 +1533,18 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
   fastify.delete('/api/auth/devices/:deviceId', async (request: FastifyRequest, reply: FastifyReply) => {
     const { deviceId } = request.params as { deviceId: string };
 
-    if (!orchestrators?.authManager) {
-      return reply.code(503).send({ error: 'Auth service not available' });
-    }
-
     try {
-      const success = orchestrators.authManager.revokeDevice(deviceId);
+      let success = false;
+
+      // Use PairingService if available
+      if (pairingService) {
+        success = pairingService.revokeDevice(deviceId);
+      } else if (orchestrators?.authManager) {
+        success = orchestrators.authManager.revokeDevice(deviceId);
+      } else {
+        return reply.code(503).send({ error: 'Auth service not available' });
+      }
+
       return { success };
     } catch (error) {
       console.error('Revoke device error:', error);
@@ -1145,69 +1552,56 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     }
   });
 
-  // Get current passphrase (for display in desktop app)
-  fastify.get('/api/auth/passphrase', async (_request: FastifyRequest, reply: FastifyReply) => {
-    if (!orchestrators?.authManager) {
-      // Return current token as fallback
-      const access = accessManager.getCurrentAccess();
-      return { passphrase: access?.token || '' };
+  // Get current pairing code (DEPRECATED: use /api/access/info instead)
+  // Kept for backwards compatibility - returns pairing code as "passphrase"
+  fastify.get('/api/auth/passphrase', async (_request: FastifyRequest, _reply: FastifyReply) => {
+    // Return pairing code from PairingService
+    if (pairingService) {
+      const code = pairingService.getCurrentCode();
+      return { passphrase: code?.code || '' };
     }
 
-    try {
+    // Fallback to legacy
+    if (orchestrators?.authManager) {
       const passphrase = orchestrators.authManager.getCurrentPassphrase();
       return { passphrase };
-    } catch (error) {
-      console.error('Get passphrase error:', error);
-      return reply.code(500).send({ error: 'Failed to get passphrase' });
     }
+
+    const access = accessManager.getCurrentAccess();
+    return { passphrase: access?.pairingCode || access?.token || '' };
   });
 
-  // Generate new passphrase
+  // Regenerate pairing code (DEPRECATED: use /api/access/refresh instead)
   fastify.post('/api/auth/passphrase/regenerate', async (_request: FastifyRequest, reply: FastifyReply) => {
-    if (!orchestrators?.authManager) {
-      // Rotate legacy token
-      const currentAccess = accessManager.getCurrentAccess();
-      if (!currentAccess) {
-        return reply.code(503).send({ error: 'No active access' });
-      }
-
-      const localBase = currentAccess.localUrl.split('?')[0] ?? '';
-      const newAccess = await accessManager.rotateAccess(localBase);
-
-      return { passphrase: newAccess.token };
+    // Refresh pairing code from PairingService
+    if (pairingService) {
+      const code = await pairingService.refreshCode();
+      return { passphrase: code?.code || '' };
     }
 
-    try {
+    // Fallback to legacy
+    if (orchestrators?.authManager) {
       const passphrase = orchestrators.authManager.regeneratePassphrase();
       return { passphrase };
-    } catch (error) {
-      console.error('Regenerate passphrase error:', error);
-      return reply.code(500).send({ error: 'Failed to regenerate passphrase' });
     }
+
+    const currentAccess = accessManager.getCurrentAccess();
+    if (!currentAccess) {
+      return reply.code(503).send({ error: 'No active access' });
+    }
+
+    const localBase = currentAccess.localUrl.split('?')[0] ?? '';
+    const newAccess = await accessManager.rotateAccess(localBase);
+    return { passphrase: newAccess.token };
   });
 
-  // Set custom password
-  fastify.post('/api/auth/password', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { password } = request.body as { password: string };
-
-    if (!password) {
-      return reply.code(400).send({ error: 'Password required' });
-    }
-
-    if (!orchestrators?.authManager) {
-      return reply.code(503).send({ error: 'Auth service not available' });
-    }
-
-    try {
-      const result = orchestrators.authManager.setCustomPassword(password);
-      if (!result.success) {
-        return reply.code(400).send({ error: result.error });
-      }
-      return { success: true };
-    } catch (error) {
-      console.error('Set password error:', error);
-      return reply.code(500).send({ error: 'Failed to set password' });
-    }
+  // DEPRECATED: Custom password no longer supported in simplified flow
+  // Kept for backwards compatibility - returns error
+  fastify.post('/api/auth/password', async (_request: FastifyRequest, reply: FastifyReply) => {
+    return reply.code(410).send({
+      error: 'Custom passwords are no longer supported. Use pairing codes instead.',
+      deprecated: true
+    });
   });
 
   // Get auth settings
@@ -1260,7 +1654,8 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     }
 
     try {
-      const tracks = orchestrators.libraryBridge.getLikedTracks();
+      const rawTracks = orchestrators.libraryBridge.getLikedTracks();
+      const tracks = (rawTracks || []).map(transformTrack);
       return { tracks, synced: true };
     } catch (error) {
       console.error('[Library API] Get likes error:', error);
@@ -1325,7 +1720,8 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     }
 
     try {
-      const tracks = orchestrators.libraryBridge.getDislikedTracks?.() || [];
+      const rawTracks = orchestrators.libraryBridge.getDislikedTracks?.() || [];
+      const tracks = rawTracks.map(transformTrack);
       return { tracks, synced: true };
     } catch (error) {
       console.error('[Library API] Get dislikes error:', error);
@@ -1378,7 +1774,12 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
     }
 
     try {
-      const playlists = orchestrators.libraryBridge.getPlaylists();
+      const rawPlaylists = orchestrators.libraryBridge.getPlaylists();
+      // Transform tracks in each playlist
+      const playlists = (rawPlaylists || []).map((p: any) => ({
+        ...p,
+        tracks: (p.tracks || []).map(transformTrack)
+      }));
       return { playlists, synced: true };
     } catch (error) {
       console.error('[Library API] Get playlists error:', error);
@@ -1394,10 +1795,16 @@ export function registerApiRoutes(fastify: FastifyInstance, context: RouteContex
       return reply.code(503).send({ error: 'Library sync not available' });
     }
 
-    const playlist = orchestrators.libraryBridge.getPlaylist(playlistId);
-    if (!playlist) {
+    const rawPlaylist = orchestrators.libraryBridge.getPlaylist(playlistId);
+    if (!rawPlaylist) {
       return reply.code(404).send({ error: 'Playlist not found' });
     }
+
+    // Transform tracks in playlist
+    const playlist = {
+      ...rawPlaylist,
+      tracks: (rawPlaylist.tracks || []).map(transformTrack)
+    };
 
     return { playlist };
   });

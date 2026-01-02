@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import type { UnifiedTrack } from '@audiio/core';
 import { MusicNoteIcon } from '@audiio/icons';
 import { useArtwork } from '../../hooks/useArtwork';
@@ -20,6 +20,13 @@ export const TrackRow: React.FC<TrackRowProps> = ({
   onContextMenu,
   compact = false
 }) => {
+  const [imageError, setImageError] = useState(false);
+
+  // Reset error state when track changes
+  useEffect(() => {
+    setImageError(false);
+  }, [track.id]);
+
   const formatDuration = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -43,12 +50,13 @@ export const TrackRow: React.FC<TrackRowProps> = ({
     >
       <span className="track-number">{index}</span>
 
-      {artworkUrl ? (
+      {artworkUrl && !imageError ? (
         <img
           className={`track-artwork ${artworkLoading ? 'loading' : ''}`}
           src={artworkUrl}
           alt={track.title}
           loading="lazy"
+          onError={() => setImageError(true)}
         />
       ) : (
         <div className="track-artwork-placeholder">

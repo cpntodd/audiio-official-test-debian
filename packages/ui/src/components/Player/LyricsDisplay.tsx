@@ -3,7 +3,7 @@ import { useLyricsStore } from '../../stores/lyrics-store';
 import { usePluginStore } from '../../stores/plugin-store';
 import { usePlayerStore } from '../../stores/player-store';
 import { useTranslatedLyrics } from '../../hooks/useTranslatedLyrics';
-import { ChevronUpIcon, ChevronDownIcon, BlockIcon, SingAlongIcon } from '@audiio/icons';
+import { ChevronUpIcon, ChevronDownIcon, BlockIcon, SingAlongIcon, PlainLyricsIcon, SyncedLyricsIcon } from '@audiio/icons';
 import { TranslationToggle } from './TranslationToggle';
 import { SingAlongLine } from '../Lyrics/SingAlongLine';
 
@@ -24,7 +24,9 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
     singAlongEnabled,
     setSingAlongEnabled,
     currentWordIndex,
-    getWordTimingsForLine
+    getWordTimingsForLine,
+    viewMode,
+    toggleViewMode
   } = useLyricsStore();
 
   const { position } = usePlayerStore();
@@ -56,13 +58,17 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
   }, []);
 
   // Auto-scroll to active line (unless user is scrolling)
+  // Uses RAF to batch layout reads/writes and avoid thrashing
   useEffect(() => {
     if (userScrolling) return;
-    if (activeLineRef.current && containerRef.current) {
-      const container = containerRef.current;
-      const activeLine = activeLineRef.current;
+    if (!activeLineRef.current || !containerRef.current) return;
 
-      // Use getBoundingClientRect for accurate positioning
+    const container = containerRef.current;
+    const activeLine = activeLineRef.current;
+
+    // Use RAF to batch layout calculations
+    const rafId = requestAnimationFrame(() => {
+      // Read phase - batch all getBoundingClientRect calls
       const containerRect = container.getBoundingClientRect();
       const lineRect = activeLine.getBoundingClientRect();
 
@@ -72,11 +78,14 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
       // Position active line at ~40% from top for better visibility
       const targetPosition = lineRelativeTop - containerRect.height * 0.4 + lineRect.height / 2;
 
+      // Write phase - scrollTo is batched with the reads
       container.scrollTo({
         top: Math.max(0, targetPosition),
         behavior: 'smooth'
       });
-    }
+    });
+
+    return () => cancelAnimationFrame(rafId);
   }, [currentLineIndex, userScrolling]);
 
   // Cleanup timeout on unmount
@@ -122,43 +131,61 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
     );
   }
 
-  // Show synced lyrics
+  // Show lyrics (synced or plain view based on viewMode)
   if (lyrics && lyrics.length > 0) {
+    const isPlainMode = viewMode === 'plain';
+
     return (
-      <div className={`lyrics-display lyrics-synced ${compact ? 'compact' : ''} ${singAlongEnabled ? 'sing-along-mode' : ''}`}>
+      <div className={`lyrics-display ${isPlainMode ? 'lyrics-plain-view' : 'lyrics-synced'} ${compact ? 'compact' : ''} ${!isPlainMode && singAlongEnabled ? 'sing-along-mode' : ''}`}>
         {/* Lyrics controls */}
         {!compact && (
           <div className="lyrics-controls">
-            <div className="lyrics-offset-controls">
-              <button
-                className="lyrics-offset-btn"
-                onClick={() => adjustOffset(-200)}
-                title="Lyrics earlier"
-              >
-                <ChevronUpIcon size={16} />
-              </button>
-              <span
-                className="lyrics-offset-label"
-                onClick={resetOffset}
-                title="Click to reset"
-              >
-                {offset === 0 ? 'Synced' : `${offset > 0 ? '+' : ''}${offset}ms`}
-              </span>
-              <button
-                className="lyrics-offset-btn"
-                onClick={() => adjustOffset(200)}
-                title="Lyrics later"
-              >
-                <ChevronDownIcon size={16} />
-              </button>
-            </div>
+            {/* View Mode Toggle */}
             <button
-              className={`lyrics-singalong-btn ${singAlongEnabled ? 'active' : ''}`}
-              onClick={() => setSingAlongEnabled(!singAlongEnabled)}
-              title={singAlongEnabled ? 'Disable Sing-Along' : 'Enable Sing-Along'}
+              className={`lyrics-viewmode-btn ${isPlainMode ? 'plain' : 'synced'}`}
+              onClick={toggleViewMode}
+              title={isPlainMode ? 'Switch to Synced Lyrics' : 'Switch to Plain Lyrics'}
             >
-              <SingAlongIcon size={16} />
+              {isPlainMode ? <PlainLyricsIcon size={16} /> : <SyncedLyricsIcon size={16} />}
             </button>
+
+            {/* Offset controls - only in synced mode */}
+            {!isPlainMode && (
+              <div className="lyrics-offset-controls">
+                <button
+                  className="lyrics-offset-btn"
+                  onClick={() => adjustOffset(-200)}
+                  title="Lyrics earlier"
+                >
+                  <ChevronUpIcon size={16} />
+                </button>
+                <span
+                  className="lyrics-offset-label"
+                  onClick={resetOffset}
+                  title="Click to reset"
+                >
+                  {offset === 0 ? 'Synced' : `${offset > 0 ? '+' : ''}${offset}ms`}
+                </span>
+                <button
+                  className="lyrics-offset-btn"
+                  onClick={() => adjustOffset(200)}
+                  title="Lyrics later"
+                >
+                  <ChevronDownIcon size={16} />
+                </button>
+              </div>
+            )}
+
+            {/* Sing-along toggle - only in synced mode */}
+            {!isPlainMode && (
+              <button
+                className={`lyrics-singalong-btn ${singAlongEnabled ? 'active' : ''}`}
+                onClick={() => setSingAlongEnabled(!singAlongEnabled)}
+                title={singAlongEnabled ? 'Disable Sing-Along' : 'Enable Sing-Along'}
+              >
+                <SingAlongIcon size={16} />
+              </button>
+            )}
             <TranslationToggle />
           </div>
         )}
@@ -166,23 +193,23 @@ export const LyricsDisplay: React.FC<LyricsDisplayProps> = ({ onSeek, compact = 
         <div
           className="lyrics-scroll-container"
           ref={containerRef}
-          onScroll={handleScroll}
+          onScroll={isPlainMode ? undefined : handleScroll}
         >
           <div className="lyrics-content">
             {lyrics.map((line, index) => {
-              const isActive = index === currentLineIndex;
-              const isPast = index < currentLineIndex;
-              const isUpcoming = index === nextLineIndex;
-              const wordTimings = singAlongEnabled ? getWordTimingsForLine(index) : [];
+              const isActive = !isPlainMode && index === currentLineIndex;
+              const isPast = !isPlainMode && index < currentLineIndex;
+              const isUpcoming = !isPlainMode && index === nextLineIndex;
+              const wordTimings = !isPlainMode && singAlongEnabled ? getWordTimingsForLine(index) : [];
 
               return (
                 <div
                   key={index}
                   ref={isActive ? activeLineRef : null}
-                  className={`lyrics-line ${isActive ? 'active' : ''} ${isPast ? 'past' : ''} ${isUpcoming ? 'upcoming' : ''}`}
-                  onClick={() => handleLineClick(index)}
+                  className={`lyrics-line ${isPlainMode ? 'plain' : ''} ${isActive ? 'active' : ''} ${isPast ? 'past' : ''} ${isUpcoming ? 'upcoming' : ''}`}
+                  onClick={isPlainMode ? undefined : () => handleLineClick(index)}
                 >
-                  {singAlongEnabled && wordTimings.length > 0 ? (
+                  {!isPlainMode && singAlongEnabled && wordTimings.length > 0 ? (
                     <SingAlongLine
                       words={wordTimings}
                       currentWordIndex={isActive ? currentWordIndex : isPast ? wordTimings.length : -1}

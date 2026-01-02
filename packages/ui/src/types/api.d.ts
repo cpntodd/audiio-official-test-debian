@@ -124,7 +124,8 @@ declare global {
       getRecommendedTracks?: (basedOn: 'artist' | 'genre', id: string) => Promise<UnifiedTrack[]>;
 
       // Audio Analysis
-      getAudioFeatures?: (trackId: string, streamUrl?: string) => Promise<AudioFeatures | null>;
+      // Accepts optional track object for stream resolution via plugins
+      getAudioFeatures?: (trackId: string, streamUrl?: string, track?: UnifiedTrack) => Promise<AudioFeatures | null>;
       analyzeAudioFile?: (filePath: string, options?: AnalysisOptions) => Promise<AudioFeatures | null>;
       analyzeAudioUrl?: (url: string, options?: AnalysisOptions) => Promise<AudioFeatures | null>;
       setAudioFeatures?: (trackId: string, features: AudioFeatures) => Promise<{ success: boolean }>;

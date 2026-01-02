@@ -1,5 +1,8 @@
 /**
  * ML Engine - Main orchestrator for the ML system
+ *
+ * The engine now includes a built-in core algorithm (HybridScorer + NeuralScorer)
+ * that runs by default. Plugin algorithms can extend or replace the core.
  */
 
 import type {
@@ -14,20 +17,42 @@ import type {
   TrainingStatus,
   MLCoreEndpoints,
   FeatureProvider,
+  AggregatedFeatures,
 } from '@audiio/ml-sdk';
 
 import { AlgorithmRegistry } from './algorithm-registry';
-import { FeatureAggregator } from './feature-aggregator';
+import { FeatureAggregator, ExtendedFeatureProvider } from './feature-aggregator';
 import { EventRecorder } from '../learning/event-recorder';
 import { PreferenceStore } from '../learning/preference-store';
 import { TrainingScheduler } from '../learning/training-scheduler';
 import { SmartQueue } from '../queue/smart-queue';
 import { createEndpoints } from '../endpoints';
 
+// Core algorithm components
+import { HybridScorer } from '../algorithm/hybrid-scorer';
+import { NeuralScorer } from '../algorithm/neural-scorer';
+import { Trainer } from '../algorithm/trainer';
+import { RadioGenerator } from '../algorithm/radio-generator';
+
+// Core providers (browser-safe)
+import { EmotionProvider } from '../providers/emotion-provider';
+import { EmbeddingProvider } from '../providers/embedding-provider';
+import { LyricsProvider } from '../providers/lyrics-provider';
+
+// EssentiaProvider is loaded dynamically (requires Node.js)
+type EssentiaProviderType = import('../providers/essentia-provider').EssentiaProvider;
+
 export interface MLEngineConfig {
+  /** Default algorithm ID (if not set, uses core algorithm) */
   defaultAlgorithmId?: string;
+  /** Auto-initialize on first use */
   autoInitialize?: boolean;
+  /** Enable automatic model training */
   enableAutoTraining?: boolean;
+  /** Use core algorithm (default: true) */
+  useCoreAlgorithm?: boolean;
+  /** Core algorithm settings */
+  coreSettings?: Record<string, unknown>;
 }
 
 export class MLEngine {
@@ -41,10 +66,24 @@ export class MLEngine {
   private config: MLEngineConfig;
   private initialized = false;
 
+  // Core algorithm components
+  private neuralScorer: NeuralScorer | null = null;
+  private hybridScorer: HybridScorer | null = null;
+  private trainer: Trainer | null = null;
+  private radioGenerator: RadioGenerator | null = null;
+
+  // Core providers
+  private essentiaProvider: EssentiaProviderType | null = null;
+  private emotionProvider: EmotionProvider | null = null;
+  private embeddingProvider: EmbeddingProvider | null = null;
+  private lyricsProvider: LyricsProvider | null = null;
+
   constructor(config: MLEngineConfig = {}) {
     this.config = {
       autoInitialize: true,
       enableAutoTraining: true,
+      useCoreAlgorithm: true,
+      coreSettings: {},
       ...config,
     };
 
@@ -86,12 +125,17 @@ export class MLEngine {
     await this.eventRecorder.load();
     await this.preferenceStore.load();
 
-    // Initialize all registered algorithms
+    // Initialize core algorithm if enabled
+    if (this.config.useCoreAlgorithm) {
+      await this.initializeCoreAlgorithm();
+    }
+
+    // Initialize all registered plugin algorithms
     if (this.config.autoInitialize) {
       await this.registry.initializeAll();
     }
 
-    // Set default algorithm if specified
+    // Set default algorithm if specified (plugin takes precedence if set)
     if (this.config.defaultAlgorithmId && this.registry.has(this.config.defaultAlgorithmId)) {
       this.registry.setActive(this.config.defaultAlgorithmId);
     } else if (this.registry.size > 0) {
@@ -103,6 +147,13 @@ export class MLEngine {
     // Start training scheduler if enabled
     if (this.config.enableAutoTraining) {
       this.trainingScheduler.start(async () => {
+        // Train core algorithm
+        if (this.trainer && this.config.useCoreAlgorithm) {
+          const dataset = await this.endpoints.training.getFullDataset();
+          await this.trainer.train(dataset);
+        }
+
+        // Also train active plugin if it supports training
         const active = this.registry.getActive();
         if (active?.train) {
           const dataset = await this.endpoints.training.getFullDataset();
@@ -116,6 +167,157 @@ export class MLEngine {
   }
 
   /**
+   * Initialize core algorithm components
+   */
+  private async initializeCoreAlgorithm(): Promise<void> {
+    console.log('[MLEngine] Initializing core algorithm...');
+
+    try {
+      // Initialize neural scorer
+      this.neuralScorer = new NeuralScorer();
+      await this.neuralScorer.initialize(this.endpoints);
+
+      // Initialize hybrid scorer
+      this.hybridScorer = new HybridScorer(
+        this.endpoints,
+        this.neuralScorer,
+        this.config.coreSettings || {}
+      );
+
+      // Initialize trainer
+      this.trainer = new Trainer(this.endpoints, this.neuralScorer);
+
+      // Initialize radio generator
+      this.radioGenerator = new RadioGenerator(this.endpoints, this.hybridScorer);
+
+      console.log('[MLEngine] Core algorithm initialized');
+    } catch (error) {
+      console.error('[MLEngine] Failed to initialize core algorithm:', error);
+    }
+
+    // Initialize core providers (with lower priority so plugins can override)
+    await this.initializeCoreProviders();
+  }
+
+  /**
+   * Initialize core feature providers
+   */
+  private async initializeCoreProviders(): Promise<void> {
+    console.log('[MLEngine] Initializing core providers...');
+
+    try {
+      // Essentia provider (priority 30 - core) - only in Node.js environment
+      if (typeof window === 'undefined') {
+        try {
+          // Dynamic import to avoid bundling in browser
+          const { EssentiaProvider } = await import('../providers/essentia-provider');
+          this.essentiaProvider = new EssentiaProvider();
+          await this.essentiaProvider.initialize();
+
+          // Register as a feature provider wrapper
+          this.featureAggregator.register({
+            id: 'core-essentia',
+            priority: 30,
+            capabilities: {
+              audioAnalysis: true,
+              emotionDetection: false,
+              lyricsAnalysis: false,
+              embeddings: false,
+              similarity: false,
+              fingerprinting: false,
+              canAnalyzeUrl: false,
+              canAnalyzeFile: true,
+              canAnalyzeBuffer: true,
+              supportsRealtime: false,
+              requiresWasm: true,
+            },
+            getAudioFeatures: async (trackId: string) => this.essentiaProvider?.getAudioFeatures(trackId) ?? null,
+          }, 'supplement');
+
+          console.log('[MLEngine] EssentiaProvider initialized (Node.js environment)');
+        } catch (error) {
+          console.warn('[MLEngine] EssentiaProvider not available:', error);
+        }
+      } else {
+        console.log('[MLEngine] Skipping EssentiaProvider (browser environment)');
+      }
+
+      // Emotion provider (priority 25 - core)
+      this.emotionProvider = new EmotionProvider();
+      await this.emotionProvider.initialize(this.endpoints);
+
+      this.featureAggregator.register({
+        id: 'core-emotion',
+        priority: 25,
+        capabilities: {
+          audioAnalysis: false,
+          emotionDetection: true,
+          lyricsAnalysis: false,
+          embeddings: false,
+          similarity: false,
+          fingerprinting: false,
+          canAnalyzeUrl: false,
+          canAnalyzeFile: true,
+          canAnalyzeBuffer: true,
+          supportsRealtime: false,
+          requiresWasm: false,
+        },
+        getEmotionFeatures: async (trackId: string) => this.emotionProvider?.getEmotionFeatures(trackId) ?? null,
+      }, 'supplement');
+
+      // Embedding provider (priority 20 - core)
+      this.embeddingProvider = new EmbeddingProvider();
+      await this.embeddingProvider.initialize(this.endpoints);
+
+      this.featureAggregator.register({
+        id: 'core-embedding',
+        priority: 20,
+        capabilities: {
+          audioAnalysis: false,
+          emotionDetection: false,
+          lyricsAnalysis: false,
+          embeddings: true,
+          similarity: true,
+          fingerprinting: false,
+          canAnalyzeUrl: false,
+          canAnalyzeFile: false,
+          canAnalyzeBuffer: false,
+          supportsRealtime: false,
+          requiresWasm: false,
+        },
+        getEmbedding: async (trackId: string) => this.embeddingProvider?.getEmbedding(trackId) ?? null,
+      }, 'supplement');
+
+      // Lyrics provider (priority 15 - core)
+      this.lyricsProvider = new LyricsProvider();
+      await this.lyricsProvider.initialize(this.endpoints);
+
+      this.featureAggregator.register({
+        id: 'core-lyrics',
+        priority: 15,
+        capabilities: {
+          audioAnalysis: false,
+          emotionDetection: false,
+          lyricsAnalysis: true,
+          embeddings: false,
+          similarity: false,
+          fingerprinting: false,
+          canAnalyzeUrl: false,
+          canAnalyzeFile: false,
+          canAnalyzeBuffer: false,
+          supportsRealtime: false,
+          requiresWasm: false,
+        },
+        getLyricsFeatures: async (trackId: string) => this.lyricsProvider?.getLyricsFeatures(trackId) ?? null,
+      }, 'supplement');
+
+      console.log('[MLEngine] Core providers initialized');
+    } catch (error) {
+      console.error('[MLEngine] Failed to initialize core providers:', error);
+    }
+  }
+
+  /**
    * Dispose the ML engine
    */
   async dispose(): Promise<void> {
@@ -123,6 +325,32 @@ export class MLEngine {
 
     this.trainingScheduler.stop();
     await this.registry.disposeAll();
+
+    // Dispose core components
+    if (this.neuralScorer) {
+      await this.neuralScorer.dispose();
+      this.neuralScorer = null;
+    }
+    if (this.essentiaProvider) {
+      await this.essentiaProvider.dispose();
+      this.essentiaProvider = null;
+    }
+    if (this.emotionProvider) {
+      await this.emotionProvider.dispose();
+      this.emotionProvider = null;
+    }
+    if (this.embeddingProvider) {
+      await this.embeddingProvider.dispose();
+      this.embeddingProvider = null;
+    }
+    if (this.lyricsProvider) {
+      await this.lyricsProvider.dispose();
+      this.lyricsProvider = null;
+    }
+
+    this.hybridScorer = null;
+    this.trainer = null;
+    this.radioGenerator = null;
 
     // Persist state
     await this.eventRecorder.save();
@@ -205,45 +433,130 @@ export class MLEngine {
 
   /**
    * Score a single track
+   * Uses core algorithm if no plugin is active
    */
   async scoreTrack(track: Track, context: ScoringContext): Promise<TrackScore> {
     const algorithm = this.registry.getActive();
-    if (!algorithm) {
-      throw new Error('No active algorithm');
+
+    // Try plugin algorithm first
+    if (algorithm) {
+      const features = await this.featureAggregator.get(track.id);
+      return algorithm.scoreTrack(track, features, context);
     }
 
-    const features = await this.featureAggregator.get(track.id);
-    return algorithm.scoreTrack(track, features, context);
+    // Fall back to core algorithm
+    if (this.hybridScorer) {
+      const features = await this.featureAggregator.get(track.id);
+      return this.hybridScorer.score(track, features, context);
+    }
+
+    // If nothing is available, return default score
+    return {
+      trackId: track.id,
+      finalScore: 50,
+      confidence: 0,
+      components: {},
+      explanation: ['No algorithm available'],
+    };
   }
 
   /**
    * Score multiple tracks
+   * Uses core algorithm if no plugin is active
    */
   async scoreBatch(tracks: Track[], context: ScoringContext): Promise<TrackScore[]> {
     const algorithm = this.registry.getActive();
-    if (!algorithm) {
-      throw new Error('No active algorithm');
+
+    // Try plugin algorithm first
+    if (algorithm) {
+      if (algorithm.scoreBatch) {
+        return algorithm.scoreBatch(tracks, context);
+      }
+      // Fallback to individual scoring
+      const promises = tracks.map(track => this.scoreTrack(track, context));
+      return Promise.all(promises);
     }
 
-    if (algorithm.scoreBatch) {
-      return algorithm.scoreBatch(tracks, context);
+    // Fall back to core algorithm
+    if (this.hybridScorer) {
+      return this.hybridScorer.scoreBatch(tracks, context);
     }
 
-    // Fallback to individual scoring
-    const promises = tracks.map(track => this.scoreTrack(track, context));
-    return Promise.all(promises);
+    // If nothing is available, return default scores
+    return tracks.map(track => ({
+      trackId: track.id,
+      finalScore: 50,
+      confidence: 0,
+      components: {},
+      explanation: ['No algorithm available'],
+    }));
   }
 
   /**
    * Rank candidates for queue
+   * Uses core algorithm if no plugin is active
    */
   async rankCandidates(candidates: Track[], context: ScoringContext): Promise<ScoredTrack[]> {
     const algorithm = this.registry.getActive();
-    if (!algorithm) {
-      throw new Error('No active algorithm');
+
+    // Try plugin algorithm first
+    if (algorithm) {
+      return algorithm.rankCandidates(candidates, context);
     }
 
-    return algorithm.rankCandidates(candidates, context);
+    // Fall back to core algorithm
+    if (this.hybridScorer) {
+      const scores = await this.hybridScorer.scoreBatch(candidates, context);
+      return candidates
+        .map((track, i) => {
+          const trackScore = scores[i];
+          return {
+            ...track,
+            score: {
+              trackId: trackScore.trackId,
+              finalScore: trackScore.finalScore,
+              confidence: trackScore.confidence,
+              components: { ...trackScore.components } as Record<string, number | undefined>,
+              explanation: trackScore.explanation,
+            },
+          };
+        })
+        .sort((a, b) => (b.score?.finalScore ?? 0) - (a.score?.finalScore ?? 0));
+    }
+
+    // If nothing is available, return with default scores
+    return candidates.map(track => ({
+      ...track,
+      score: {
+        trackId: track.id,
+        finalScore: 50,
+        confidence: 0,
+        components: {},
+        explanation: ['No algorithm available'],
+      },
+    }));
+  }
+
+  /**
+   * Check if core algorithm is available
+   */
+  hasCoreAlgorithm(): boolean {
+    return this.hybridScorer !== null && this.neuralScorer !== null;
+  }
+
+  /**
+   * Get core algorithm training status
+   */
+  getCoreTrainingStatus(): TrainingStatus | undefined {
+    if (!this.trainer) return undefined;
+    const status = this.trainer.getStatus();
+    return {
+      state: status.state,
+      progress: status.progress,
+      currentEpoch: status.currentEpoch,
+      totalEpochs: status.totalEpochs,
+      currentLoss: status.currentLoss,
+    };
   }
 
   // ============================================================================

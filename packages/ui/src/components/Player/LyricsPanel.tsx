@@ -8,7 +8,7 @@
  * Full-screen works independently - vocal removal is an optional toggle.
  */
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { useUIStore } from '../../stores/ui-store';
 import { usePlayerStore } from '../../stores/player-store';
 import { useLyricsStore } from '../../stores/lyrics-store';
@@ -16,7 +16,8 @@ import { useKaraokeStore } from '../../stores/karaoke-store';
 import { useTranslatedLyrics } from '../../hooks/useTranslatedLyrics';
 import {
   CloseIcon,
-  LyricsIcon,
+  PlainLyricsIcon,
+  SyncedLyricsIcon,
   MusicNoteIcon,
   ChevronDownIcon,
   ChevronUpIcon,
@@ -31,6 +32,15 @@ import {
 } from '@audiio/icons';
 import { TranslationToggle } from './TranslationToggle';
 import { SingAlongLine, SingAlongLyrics } from '../Lyrics/SingAlongLine';
+
+// Lyrics display modes
+type LyricsMode = 'synced' | 'sing-along' | 'plain';
+
+const LYRICS_MODE_OPTIONS: { value: LyricsMode; label: string; icon: React.ReactNode }[] = [
+  { value: 'synced', label: 'Synced', icon: <SyncedLyricsIcon size={16} /> },
+  { value: 'sing-along', label: 'Sing-Along', icon: <SingAlongIcon size={16} /> },
+  { value: 'plain', label: 'Plain', icon: <PlainLyricsIcon size={16} /> },
+];
 
 export const LyricsPanel: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,15 +68,15 @@ export const LyricsPanel: React.FC = () => {
     error,
     fetchLyrics,
     updateCurrentLine,
-    clearLyrics,
     singAlongEnabled,
     setSingAlongEnabled,
     linesWithWords,
     currentWordIndex,
-    updateCurrentWord,
     getWordTimingsForLine,
     offset,
-    updatePositionAtomic
+    updatePositionAtomic,
+    viewMode,
+    toggleViewMode
   } = useLyricsStore();
 
   const {
@@ -79,6 +89,45 @@ export const LyricsPanel: React.FC = () => {
     resetOffset,
     translationEnabled
   } = useTranslatedLyrics();
+
+  // Lyrics mode dropdown state
+  const [showLyricsModeMenu, setShowLyricsModeMenu] = useState(false);
+  const lyricsModeRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!showLyricsModeMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (lyricsModeRef.current && !lyricsModeRef.current.contains(e.target as Node)) {
+        setShowLyricsModeMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showLyricsModeMenu]);
+
+  // Derive current lyrics mode from viewMode + singAlongEnabled
+  const currentLyricsMode: LyricsMode = viewMode === 'plain' ? 'plain' : singAlongEnabled ? 'sing-along' : 'synced';
+
+  // Handle lyrics mode change
+  const handleLyricsModeChange = useCallback((mode: LyricsMode) => {
+    setShowLyricsModeMenu(false);
+    if (mode === 'plain') {
+      // Switch to plain view (this also disables sing-along in the store)
+      if (viewMode !== 'plain') toggleViewMode();
+    } else if (mode === 'sing-along') {
+      // Ensure synced mode and enable sing-along
+      if (viewMode === 'plain') toggleViewMode();
+      if (!singAlongEnabled) setSingAlongEnabled(true);
+    } else {
+      // Synced mode without sing-along
+      if (viewMode === 'plain') toggleViewMode();
+      if (singAlongEnabled) setSingAlongEnabled(false);
+    }
+  }, [viewMode, singAlongEnabled, toggleViewMode, setSingAlongEnabled]);
+
+  // Get current mode icon and label
+  const currentModeOption = LYRICS_MODE_OPTIONS.find(o => o.value === currentLyricsMode) || LYRICS_MODE_OPTIONS[0];
 
   // Ref for basic lyrics mode auto-scroll
   const basicLyricsRef = useRef<HTMLDivElement>(null);
@@ -232,15 +281,31 @@ export const LyricsPanel: React.FC = () => {
 
           {/* Fullscreen Controls - Lyrics Mode, Karaoke & Translation */}
           <div className="lyrics-fullscreen-controls">
-            {/* Lyrics Mode Toggle - Switch between word-by-word and basic synced */}
-            <button
-              className={`lyrics-fullscreen-btn ${!singAlongEnabled ? 'active' : ''}`}
-              onClick={() => setSingAlongEnabled(!singAlongEnabled)}
-              title={singAlongEnabled ? 'Switch to Basic Lyrics' : 'Switch to Sing-Along Mode'}
-            >
-              {singAlongEnabled ? <SingAlongIcon size={20} /> : <LyricsIcon size={20} />}
-              <span>{singAlongEnabled ? 'Sing-Along' : 'Lyrics'}</span>
-            </button>
+            {/* Lyrics Mode Dropdown */}
+            <div className="lyrics-mode-dropdown fullscreen" ref={lyricsModeRef}>
+              <button
+                className="lyrics-mode-trigger"
+                onClick={() => setShowLyricsModeMenu(!showLyricsModeMenu)}
+                title={`Lyrics: ${currentModeOption?.label}`}
+              >
+                {currentModeOption?.icon}
+                <ChevronDownIcon size={12} />
+              </button>
+              {showLyricsModeMenu && (
+                <div className="lyrics-mode-menu" onClick={(e) => e.stopPropagation()}>
+                  {LYRICS_MODE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      className={currentLyricsMode === opt.value ? 'active' : ''}
+                      onClick={() => handleLyricsModeChange(opt.value)}
+                    >
+                      {opt.icon}
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Karaoke Toggle - Apple Music "Sing" style */}
             {karaokeAvailable && (
@@ -302,8 +367,8 @@ export const LyricsPanel: React.FC = () => {
             </div>
           )}
 
-          {/* Sing-Along Mode - Word-by-word highlighting */}
-          {!isLoading && singAlongEnabled && linesWithWords && linesWithWords.length > 0 && (
+          {/* Sing-Along Mode - Word-by-word highlighting (only in synced mode) */}
+          {!isLoading && viewMode === 'synced' && singAlongEnabled && linesWithWords && linesWithWords.length > 0 && (
             <SingAlongLyrics
               linesWithWords={
                 // Merge translations from lyrics into linesWithWords
@@ -321,8 +386,8 @@ export const LyricsPanel: React.FC = () => {
             />
           )}
 
-          {/* Basic Lyrics Mode - Line-by-line highlighting (like sidebar) */}
-          {!isLoading && !singAlongEnabled && lyrics && lyrics.length > 0 && (
+          {/* Basic Synced Lyrics Mode - Line-by-line highlighting (only in synced mode) */}
+          {!isLoading && viewMode === 'synced' && !singAlongEnabled && lyrics && lyrics.length > 0 && (
             <div className="lyrics-fullscreen-basic" ref={basicLyricsRef}>
               {lyrics.map((line, index) => {
                 const isActive = index === currentLineIndex;
@@ -343,6 +408,20 @@ export const LyricsPanel: React.FC = () => {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Plain Lyrics Mode - Static text, no highlighting */}
+          {!isLoading && viewMode === 'plain' && lyrics && lyrics.length > 0 && (
+            <div className="lyrics-fullscreen-plain">
+              {lyrics.map((line, index) => (
+                <div key={index} className="lyrics-fullscreen-line plain">
+                  <span className="lyrics-fullscreen-line-text">{line.text || '\u00A0'}</span>
+                  {translationEnabled && line.translation && (
+                    <span className="lyrics-fullscreen-line-translation">{line.translation}</span>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -386,6 +465,33 @@ export const LyricsPanel: React.FC = () => {
           </div>
         </div>
         <div className="lyrics-panel-header-actions">
+          {/* Lyrics Mode Dropdown */}
+          {lyrics && lyrics.length > 0 && (
+            <div className="lyrics-mode-dropdown" ref={lyricsModeRef}>
+              <button
+                className="lyrics-mode-trigger"
+                onClick={() => setShowLyricsModeMenu(!showLyricsModeMenu)}
+                title={`Lyrics: ${currentModeOption?.label}`}
+              >
+                {currentModeOption?.icon}
+                <ChevronDownIcon size={12} />
+              </button>
+              {showLyricsModeMenu && (
+                <div className="lyrics-mode-menu" onClick={(e) => e.stopPropagation()}>
+                  {LYRICS_MODE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      className={currentLyricsMode === opt.value ? 'active' : ''}
+                      onClick={() => handleLyricsModeChange(opt.value)}
+                    >
+                      {opt.icon}
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {karaokeAvailable && (
             <button
               className={`lyrics-panel-karaoke ${karaokeEnabled ? 'active' : ''} ${karaokeProcessing ? 'processing' : ''}`}
@@ -395,20 +501,11 @@ export const LyricsPanel: React.FC = () => {
               <KaraokeIcon size={18} />
             </button>
           )}
-          {lyrics && lyrics.length > 0 && (
-            <button
-              className={`lyrics-panel-singalong ${singAlongEnabled ? 'active' : ''}`}
-              onClick={() => setSingAlongEnabled(!singAlongEnabled)}
-              title={singAlongEnabled ? 'Disable Sing-Along' : 'Enable Sing-Along'}
-            >
-              <SingAlongIcon size={18} />
-            </button>
-          )}
           <TranslationToggle compact />
           <button
             className="lyrics-panel-expand"
             onClick={toggleLyricsPanelExpanded}
-            title="Full-Screen Karaoke"
+            title="Full-Screen Lyrics"
           >
             <ExpandIcon size={18} />
           </button>
@@ -418,8 +515,8 @@ export const LyricsPanel: React.FC = () => {
         </div>
       </header>
 
-      {/* Offset Controls */}
-      {lyrics && lyrics.length > 0 && (
+      {/* Offset Controls - only show in synced mode */}
+      {lyrics && lyrics.length > 0 && viewMode === 'synced' && (
         <div className="lyrics-panel-offset">
           <button
             className="lyrics-offset-button"
@@ -456,7 +553,8 @@ export const LyricsPanel: React.FC = () => {
           </div>
         )}
 
-        {!isLoading && !error && lyrics && lyrics.length > 0 && (
+        {/* Synced lyrics view - with highlighting and timing */}
+        {!isLoading && !error && lyrics && lyrics.length > 0 && viewMode === 'synced' && (
           <div className={`lyrics-panel-synced ${singAlongEnabled ? 'sing-along-mode' : ''}`}>
             {lyrics.map((line, index) => {
               const isActive = index === currentLineIndex;
@@ -486,6 +584,20 @@ export const LyricsPanel: React.FC = () => {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Plain lyrics view - static text, no highlighting */}
+        {!isLoading && !error && lyrics && lyrics.length > 0 && viewMode === 'plain' && (
+          <div className="lyrics-panel-plain">
+            {lyrics.map((line, index) => (
+              <div key={index} className="lyrics-panel-line plain">
+                {line.text || '\u00A0'}
+                {translationEnabled && line.translation && (
+                  <span className="lyrics-panel-line-translation">{line.translation}</span>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

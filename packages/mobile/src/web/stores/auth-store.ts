@@ -1,24 +1,71 @@
 /**
- * Auth Store - Manages authentication state
+ * Auth Store - Simplified mobile authentication
  *
- * When connected via P2P, API calls are routed through the P2P connection.
- * When on local network, API calls go directly to the server.
+ * Single unified flow:
+ * 1. Enter WORD-WORD-NUMBER code or scan QR
+ * 2. Get device token (auto-approved)
+ * 3. Token saved, connection established
+ *
+ * Auto-routing: Tries local first, falls back to relay.
  */
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { isP2PConnected, p2pApiRequest } from './p2p-store';
 
+// Device credential (single key for all device info)
+interface DeviceCredential {
+  token: string;      // Full device token (deviceId:token)
+  id: string;         // Device ID
+  name?: string;      // Device name (optional)
+  localUrl?: string;  // Last known local URL for reconnection
+  // Server identity for persistent reconnection (Plex-like)
+  serverId?: string;      // Persistent server UUID
+  serverName?: string;    // Human-friendly server name
+  relayCode?: string;     // Persistent relay code for reconnection
+}
+
+// Get stored device credential
+function getStoredCredential(): DeviceCredential | null {
+  try {
+    const stored = localStorage.getItem('audiio-device');
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Store device credential
+function storeCredential(credential: DeviceCredential): void {
+  localStorage.setItem('audiio-device', JSON.stringify(credential));
+}
+
+// Clear device credential
+function clearCredential(): void {
+  localStorage.removeItem('audiio-device');
+  // Also clear legacy keys
+  localStorage.removeItem('audiio-device-token');
+  localStorage.removeItem('audiio-device-id');
+}
+
 // Token accessor - will be set after store is created
-let getToken: () => string | null = () => null;
+let getTokenPart: () => string | null = () => null;
+
+// Get session token from URL (for local access)
+function getUrlToken(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('token');
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Fetch wrapper that routes API calls through P2P when connected,
  * or falls back to direct HTTP for local network access.
  */
 export async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const token = getToken();
-
   // Try P2P first if connected
   if (isP2PConnected()) {
     const body = options.body ? JSON.parse(options.body as string) : undefined;
@@ -37,6 +84,8 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
   }
 
   // Fall back to direct HTTP (local network)
+  // Use device token first, then URL session token as fallback
+  const token = getTokenPart() || getUrlToken();
   let finalUrl = url;
   if (token && url.startsWith('/api')) {
     const separator = url.includes('?') ? '&' : '?';
@@ -49,126 +98,266 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
 // Alias for backwards compatibility
 export const tunnelFetch = apiFetch;
 
+type ConnectionMode = 'local' | 'relay' | null;
+
 interface AuthState {
-  token: string | null;
+  // Simplified state
+  deviceToken: string | null;     // Full device token (deviceId:token)
+  deviceId: string | null;
+  deviceName: string | null;
+  localUrl: string | null;        // Last known local URL
+  connectionMode: ConnectionMode;
+
+  // Server identity (for persistent reconnection)
+  serverId: string | null;        // Persistent server UUID
+  serverName: string | null;      // Human-friendly server name
+  relayCode: string | null;       // Persistent relay code for reconnection
+
+  // UI state
   isAuthenticated: boolean;
-  isValidating: boolean;
+  isConnecting: boolean;
   isPairing: boolean;
   error: string | null;
 
   // Actions
-  setToken: (token: string) => void;
+  pair: (code: string, deviceName?: string) => Promise<boolean>;
   validateToken: () => Promise<boolean>;
-  pairWithCode: (pairingCode: string) => Promise<boolean>;
   logout: () => void;
+
+  // Get saved relay code for reconnection
+  getSavedRelayCode: () => string | null;
+
+  // Internal
+  _setConnectionMode: (mode: ConnectionMode) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set, get) => ({
-      token: null,
-      isAuthenticated: false,
-      isValidating: false,
-      isPairing: false,
-      error: null,
+    (set, get) => {
+      // Migrate from legacy storage on first load
+      const stored = getStoredCredential();
+      const legacyToken = localStorage.getItem('audiio-device-token');
+      const legacyId = localStorage.getItem('audiio-device-id');
 
-      setToken: (token) => {
-        set({ token, error: null });
-      },
+      const initial = stored ? {
+        deviceToken: stored.token,
+        deviceId: stored.id,
+        deviceName: stored.name || null,
+        localUrl: stored.localUrl || null,
+        serverId: stored.serverId || null,
+        serverName: stored.serverName || null,
+        relayCode: stored.relayCode || null
+      } : legacyToken && legacyId ? {
+        deviceToken: legacyToken,
+        deviceId: legacyId,
+        deviceName: null,
+        localUrl: null,
+        serverId: null,
+        serverName: null,
+        relayCode: null
+      } : {
+        deviceToken: null,
+        deviceId: null,
+        deviceName: null,
+        localUrl: null,
+        serverId: null,
+        serverName: null,
+        relayCode: null
+      };
 
-      validateToken: async () => {
-        const { token } = get();
+      return {
+        ...initial,
+        connectionMode: null,
+        isAuthenticated: !!initial.deviceToken,
+        isConnecting: false,
+        isPairing: false,
+        error: null,
 
-        if (!token) {
-          set({ isAuthenticated: false });
-          return false;
-        }
+        pair: async (code: string, deviceName?: string) => {
+          set({ isPairing: true, error: null });
 
-        set({ isValidating: true, error: null });
+          try {
+            // Use apiFetch to route through P2P if connected
+            const response = await apiFetch('/api/auth/pair', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                code: code.toUpperCase().trim(),
+                deviceName: deviceName || getDefaultDeviceName()
+              })
+            });
 
-        try {
-          const response = await tunnelFetch(`/api/health?token=${token}`);
+            const data = await response.json();
 
-          if (response.ok) {
-            set({ isAuthenticated: true, isValidating: false });
-            return true;
-          } else {
+            if (data.success && data.deviceToken) {
+              // Store credential with server identity for persistent reconnection
+              const credential: DeviceCredential = {
+                token: data.deviceToken,
+                id: data.deviceId,
+                name: deviceName || getDefaultDeviceName(),
+                localUrl: data.localUrl || window.location.origin,
+                // Server identity (for Plex-like "pair once, connect forever")
+                serverId: data.serverId,
+                serverName: data.serverName,
+                relayCode: data.relayCode
+              };
+              storeCredential(credential);
+
+              console.log('[Auth] Paired successfully:', {
+                deviceId: data.deviceId,
+                serverId: data.serverId,
+                serverName: data.serverName,
+                relayCode: data.relayCode
+              });
+
+              set({
+                deviceToken: data.deviceToken,
+                deviceId: data.deviceId,
+                deviceName: credential.name,
+                localUrl: credential.localUrl,
+                serverId: data.serverId || null,
+                serverName: data.serverName || null,
+                relayCode: data.relayCode || null,
+                isAuthenticated: true,
+                isPairing: false,
+                error: null
+              });
+
+              return true;
+            }
+
+            // Pairing failed
             set({
-              isAuthenticated: false,
-              isValidating: false,
-              error: 'Invalid or expired token',
-              token: null
+              isPairing: false,
+              error: data.error || 'Invalid or expired pairing code'
+            });
+            return false;
+          } catch (error) {
+            set({
+              isPairing: false,
+              error: 'Unable to connect to server'
             });
             return false;
           }
-        } catch (error) {
-          set({
-            isAuthenticated: false,
-            isValidating: false,
-            error: 'Unable to connect to server'
-          });
-          return false;
-        }
-      },
+        },
 
-      pairWithCode: async (pairingCode: string) => {
-        set({ isPairing: true, error: null });
+        validateToken: async () => {
+          const { deviceToken } = get();
 
-        try {
-          const response = await fetch('/api/auth/pair', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ pairingCode })
-          });
-
-          const data = await response.json();
-
-          if (data.success && data.deviceToken) {
-            // Store device token for future connections
-            localStorage.setItem('audiio-device-token', data.deviceToken);
-            localStorage.setItem('audiio-device-id', data.deviceId);
-
-            // Extract token part for session auth
-            const tokenPart = data.deviceToken.split(':')[1];
-            if (tokenPart) {
-              set({ token: tokenPart, isAuthenticated: true, isPairing: false });
-              return true;
-            }
+          if (!deviceToken) {
+            set({ isAuthenticated: false });
+            return false;
           }
 
-          // Pairing failed
-          set({
-            isPairing: false,
-            error: data.error || 'Pairing failed'
-          });
-          return false;
-        } catch (error) {
-          set({
-            isPairing: false,
-            error: 'Unable to connect to server'
-          });
-          return false;
-        }
-      },
+          set({ isConnecting: true, error: null });
 
-      logout: () => {
-        localStorage.removeItem('audiio-device-token');
-        localStorage.removeItem('audiio-device-id');
-        set({
-          token: null,
-          isAuthenticated: false,
-          error: null
-        });
-      }
-    }),
+          try {
+            // Use device token for validation
+            const response = await fetch('/api/auth/device', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ deviceToken })
+            });
+
+            const data = await response.json();
+
+            if (data.valid) {
+              set({
+                isAuthenticated: true,
+                isConnecting: false,
+                connectionMode: 'local'
+              });
+              return true;
+            } else {
+              // Token invalid - clear credentials
+              clearCredential();
+              set({
+                deviceToken: null,
+                deviceId: null,
+                isAuthenticated: false,
+                isConnecting: false,
+                error: 'Device not recognized. Please pair again.'
+              });
+              return false;
+            }
+          } catch (error) {
+            // Can't reach server - might need to use relay
+            set({
+              isConnecting: false,
+              error: 'Unable to connect to server'
+            });
+            return false;
+          }
+        },
+
+        logout: () => {
+          clearCredential();
+          set({
+            deviceToken: null,
+            deviceId: null,
+            deviceName: null,
+            localUrl: null,
+            serverId: null,
+            serverName: null,
+            relayCode: null,
+            connectionMode: null,
+            isAuthenticated: false,
+            error: null
+          });
+        },
+
+        getSavedRelayCode: () => {
+          // Get stored relay code for reconnection without re-pairing
+          const credential = getStoredCredential();
+          return credential?.relayCode || get().relayCode;
+        },
+
+        _setConnectionMode: (mode) => set({ connectionMode: mode })
+      };
+    },
     {
       name: 'audiio-mobile-auth',
-      partialize: (state) => ({ token: state.token })
+      partialize: (state) => ({
+        deviceToken: state.deviceToken,
+        deviceId: state.deviceId,
+        deviceName: state.deviceName,
+        localUrl: state.localUrl,
+        // Server identity for persistent reconnection
+        serverId: state.serverId,
+        serverName: state.serverName,
+        relayCode: state.relayCode
+      })
     }
   )
 );
 
 // Set up the token accessor after store is created
-getToken = () => useAuthStore.getState().token;
+// Send full deviceToken (deviceId:token format) for validation
+getTokenPart = () => {
+  const { deviceToken } = useAuthStore.getState();
+  return deviceToken || null;
+};
+
+/**
+ * Get a friendly device name based on user agent
+ */
+function getDefaultDeviceName(): string {
+  const ua = navigator.userAgent;
+
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/Android/.test(ua)) {
+    const match = ua.match(/Android.*?;\s*([^)]+)/);
+    if (match) return match[1].split(' Build')[0];
+    return 'Android Device';
+  }
+  if (/Mac/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows PC';
+  if (/Linux/.test(ua)) return 'Linux';
+
+  return 'Mobile Device';
+}

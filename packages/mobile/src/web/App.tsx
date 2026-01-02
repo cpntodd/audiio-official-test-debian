@@ -5,7 +5,7 @@
  * All settings and addons are managed on the host - this is just the remote.
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './stores/auth-store';
 import { usePlayerStore } from './stores/player-store';
@@ -27,31 +27,21 @@ import { PluginDetailPage } from './pages/PluginDetailPage';
 import { AuthPage } from './pages/AuthPage';
 
 export function App() {
-  const { isAuthenticated, validateToken, token } = useAuthStore();
+  const { isAuthenticated, validateToken, deviceToken } = useAuthStore();
   const { connectWebSocket } = usePlayerStore();
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for token in URL or stored token
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlToken = urlParams.get('token');
-
-    if (urlToken) {
-      // Store token and remove from URL
-      useAuthStore.getState().setToken(urlToken);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-
-    // Validate the stored token
+    // Validate the stored device token on mount
     validateToken().finally(() => setIsLoading(false));
   }, [validateToken]);
 
   useEffect(() => {
-    // Connect WebSocket when authenticated
-    if (isAuthenticated && token) {
-      connectWebSocket(token);
+    // Connect WebSocket when authenticated with device token
+    if (isAuthenticated && deviceToken) {
+      connectWebSocket(deviceToken);
     }
-  }, [isAuthenticated, token, connectWebSocket]);
+  }, [isAuthenticated, deviceToken, connectWebSocket]);
 
   if (isLoading) {
     return (

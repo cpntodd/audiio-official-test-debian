@@ -14,6 +14,7 @@ interface StatCardProps {
     label: string;
   };
   variant?: 'default' | 'accent' | 'success' | 'warning';
+  size?: 'default' | 'large';
 }
 
 export const StatCard: React.FC<StatCardProps> = ({
@@ -23,9 +24,10 @@ export const StatCard: React.FC<StatCardProps> = ({
   subtitle,
   trend,
   variant = 'default',
+  size = 'default',
 }) => {
   return (
-    <div className={`stat-card stat-card--${variant}`}>
+    <div className={`stat-card stat-card--${variant} stat-card--${size}`}>
       <div className="stat-card-icon">{icon}</div>
       <div className="stat-card-content">
         <div className="stat-card-value">{value}</div>
