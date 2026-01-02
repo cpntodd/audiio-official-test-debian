@@ -107,6 +107,20 @@ let messageHandler: ((type: string, payload: unknown) => void) | null = null;
 // Ping interval handle
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 
+// Auto-reconnect config
+const RECONNECT_CONFIG = {
+  initialDelay: 1000,
+  maxDelay: 30000,
+  multiplier: 1.5,
+  maxAttempts: 10,
+};
+
+// Reconnect state
+let reconnectAttempts = 0;
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let lastCode: string | null = null;
+let lastDeviceName: string | null = null;
+
 // Generate key pair on load
 const keyPair = generateKeyPair();
 const selfId = keyPair.publicKey.substring(0, 16);
@@ -124,6 +138,16 @@ export const useP2PStore = create<P2PState>((set, get) => ({
 
   connect: async (code: string, deviceName?: string) => {
     const normalizedCode = code.toUpperCase().trim();
+
+    // Store for auto-reconnect
+    lastCode = normalizedCode;
+    lastDeviceName = deviceName || getDeviceName();
+
+    // Clear any pending reconnect
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
 
     set({
       status: 'connecting',
@@ -183,8 +207,9 @@ export const useP2PStore = create<P2PState>((set, get) => ({
           try {
             const message = JSON.parse(event.data);
             handleRelayMessage(message, set, get, () => {
-              // On successful connection
+              // On successful connection - reset reconnect attempts
               cleanup();
+              reconnectAttempts = 0;
               startPingInterval(get);
               resolveOnce(true);
             }, (errorMsg: string) => {
@@ -208,6 +233,23 @@ export const useP2PStore = create<P2PState>((set, get) => ({
               desktopPublicKey: null,
               error: 'Connection lost'
             });
+
+            // Auto-reconnect if we have saved credentials
+            if (lastCode && reconnectAttempts < RECONNECT_CONFIG.maxAttempts) {
+              const delay = Math.min(
+                RECONNECT_CONFIG.initialDelay * Math.pow(RECONNECT_CONFIG.multiplier, reconnectAttempts),
+                RECONNECT_CONFIG.maxDelay
+              );
+              reconnectAttempts++;
+              console.log(`[P2P] Auto-reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+
+              reconnectTimeout = setTimeout(() => {
+                const currentStatus = get().status;
+                if (currentStatus === 'disconnected' && lastCode) {
+                  get().connect(lastCode, lastDeviceName || undefined);
+                }
+              }, delay);
+            }
           }
         };
 
@@ -233,6 +275,16 @@ export const useP2PStore = create<P2PState>((set, get) => ({
   disconnect: () => {
     const { ws } = get();
     stopPingInterval();
+
+    // Clear auto-reconnect state
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+    reconnectAttempts = 0;
+    lastCode = null;
+    lastDeviceName = null;
+
     if (ws) {
       ws.close();
     }
@@ -409,12 +461,13 @@ function handleRelayMessage(
 function startPingInterval(get: () => P2PState): void {
   stopPingInterval();
 
+  // Ping every 15 seconds to keep connection alive
   pingInterval = setInterval(() => {
     const { ws } = get();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
     }
-  }, 30000);
+  }, 15000);
 }
 
 function stopPingInterval(): void {
@@ -479,3 +532,18 @@ export async function p2pApiRequest(
 }
 
 export { selfId };
+
+// Handle visibility changes - reconnect when page becomes visible
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      const state = useP2PStore.getState();
+      // If we were connected but now disconnected, try to reconnect
+      if (state.status === 'disconnected' && lastCode) {
+        console.log('[P2P] Page became visible, attempting reconnect...');
+        reconnectAttempts = 0; // Reset attempts for fresh reconnect
+        state.connect(lastCode, lastDeviceName || undefined);
+      }
+    }
+  });
+}

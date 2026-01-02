@@ -9,6 +9,7 @@
 
 import { create } from 'zustand';
 import { tunnelFetch } from './auth-store';
+import { useP2PStore, isP2PConnected } from './p2p-store';
 
 // Reconnection configuration (Plex-style)
 const RECONNECT_CONFIG = {
@@ -511,8 +512,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   sendRemoteCommand: (command, payload) => {
     const { wsConnection } = get();
 
+    // Try P2P first if connected (for remote mode from GitHub Pages, etc.)
+    if (isP2PConnected()) {
+      console.log(`[Remote] Sending command via P2P: ${command}`);
+      useP2PStore.getState().send('remote-command', { command, ...payload });
+      return;
+    }
+
+    // Fall back to WebSocket for local network
     if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-      console.warn('[Remote] WebSocket not connected');
+      console.warn('[Remote] Neither P2P nor WebSocket connected');
       return;
     }
 
