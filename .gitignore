@@ -42,3 +42,6 @@ audiio-musicbrainz/
 
 # Misc
 nul
+
+# Claude Code
+.claude/
