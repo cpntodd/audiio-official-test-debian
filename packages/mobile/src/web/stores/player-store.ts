@@ -122,9 +122,9 @@ interface PlayerState {
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
-  // Default to remote mode - mobile controls desktop playback
-  // 'local' mode plays audio on mobile device itself
-  playbackMode: 'remote',
+  // Default to local mode - mobile plays audio on the device itself (Plex-like)
+  // 'remote' mode controls desktop playback
+  playbackMode: 'local',
   desktopState: null,
 
   // Local state
