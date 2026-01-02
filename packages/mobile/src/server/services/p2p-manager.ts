@@ -125,7 +125,7 @@ export class P2PManager extends EventEmitter {
   }
 
   /**
-   * Wait for connection code from relay
+   * Wait for connection code from relay (waits for actual registration, not just requested code)
    */
   private waitForCode(): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -133,17 +133,19 @@ export class P2PManager extends EventEmitter {
         reject(new Error('Timeout waiting for connection code'));
       }, 10000);
 
-      const checkCode = () => {
-        const code = this.relay?.getConnectionCode();
-        if (code) {
-          clearTimeout(timeout);
-          resolve(code);
-        } else {
-          setTimeout(checkCode, 100);
-        }
-      };
+      // Listen for the 'registered' event which gives us the ACTUAL assigned code
+      const unsubscribe = this.relay?.on('registered', (code) => {
+        clearTimeout(timeout);
+        unsubscribe?.();
+        console.log(`[P2P] Got assigned code from relay: ${code}`);
+        resolve(code);
+      });
 
-      checkCode();
+      // If no relay, reject immediately
+      if (!this.relay) {
+        clearTimeout(timeout);
+        reject(new Error('No relay client'));
+      }
     });
   }
 
