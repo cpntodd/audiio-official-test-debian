@@ -34,6 +34,20 @@ import {
   type EnrichmentResult as _EnrichmentResult
 } from './local-metadata-service';
 
+// =============================================
+// Audio Configuration for macOS
+// =============================================
+// Fix audio static/popping issues on macOS by configuring Chromium's audio pipeline
+if (process.platform === 'darwin') {
+  // Disable audio output resampling which can cause static on macOS
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess');
+  // Use a larger audio buffer to prevent underruns
+  app.commandLine.appendSwitch('audio-buffer-size', '4096');
+}
+
+// Allow autoplay without user gesture (needed for seamless playback)
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 // Tools with registered handlers (for cleanup on quit)
 const registeredToolHandlers: Set<string> = new Set();
 

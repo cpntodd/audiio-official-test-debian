@@ -43,6 +43,39 @@ class PluginInstallerService {
   }
 
   /**
+   * Get a clean environment for running commands on macOS/Linux
+   */
+  private getCleanEnv(): NodeJS.ProcessEnv {
+    const isMac = process.platform === 'darwin';
+    const isLinux = process.platform === 'linux';
+
+    if (!isMac && !isLinux) {
+      return process.env;
+    }
+
+    // Build a clean PATH that includes common npm/node locations
+    const cleanPath = [
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+      '/opt/homebrew/bin',
+      '/usr/local/opt/node/bin',
+      process.env.HOME + '/.nvm/versions/node/v20.18.2/bin',
+      process.env.HOME + '/.nvm/versions/node/v22.12.0/bin',
+      process.env.HOME + '/.npm-global/bin',
+      process.env.PATH || ''
+    ].join(':');
+
+    return {
+      ...process.env,
+      PATH: cleanPath,
+      // Prevent shell from sourcing profile files
+      BASH_ENV: '',
+      ENV: '',
+    };
+  }
+
+  /**
    * Check if git is available on the system
    */
   private isGitAvailable(): boolean {
@@ -51,7 +84,7 @@ class PluginInstallerService {
     }
 
     try {
-      execSync('git --version', { stdio: 'ignore' });
+      execSync('git --version', { stdio: 'ignore', env: this.getCleanEnv() });
       this.gitAvailable = true;
       console.log('[PluginInstaller] Git is available');
     } catch {
@@ -67,9 +100,10 @@ class PluginInstallerService {
    */
   private isNpmAvailable(): boolean {
     try {
-      execSync('npm --version', { stdio: 'ignore' });
+      execSync('npm --version', { stdio: 'ignore', env: this.getCleanEnv() });
       return true;
-    } catch {
+    } catch (error) {
+      console.log('[PluginInstaller] npm not available:', error);
       return false;
     }
   }
@@ -734,13 +768,18 @@ class PluginInstallerService {
     }
   ): Promise<void> {
     return new Promise((resolve, reject) => {
+      const isMac = process.platform === 'darwin';
+      const isLinux = process.platform === 'linux';
+
       const proc: ChildProcess = spawn(command, args, {
         cwd: options?.cwd || process.cwd(),
-        shell: true,
+        shell: isMac || isLinux ? '/bin/bash' : true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: this.getCleanEnv(),
       });
 
       let output = '';
+      let errorOutput = '';
 
       proc.stdout?.on('data', (data: Buffer) => {
         const text = data.toString();
@@ -750,19 +789,26 @@ class PluginInstallerService {
 
       proc.stderr?.on('data', (data: Buffer) => {
         const text = data.toString();
-        output += text;
-        // Don't report stderr as progress (may contain warnings)
+        errorOutput += text;
+        // Log stderr for debugging but don't treat all stderr as errors
+        // (npm often outputs warnings to stderr)
+        console.log(`[PluginInstaller] stderr: ${text.trim()}`);
       });
 
       proc.on('close', (code) => {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`Command failed with code ${code}: ${output}`));
+          const fullOutput = output + '\n' + errorOutput;
+          console.error(`[PluginInstaller] Command failed: ${command} ${args.join(' ')}`);
+          console.error(`[PluginInstaller] Exit code: ${code}`);
+          console.error(`[PluginInstaller] Output: ${fullOutput}`);
+          reject(new Error(`Command failed with code ${code}: ${fullOutput}`));
         }
       });
 
       proc.on('error', (error) => {
+        console.error(`[PluginInstaller] Process error:`, error);
         reject(error);
       });
     });
