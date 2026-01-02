@@ -42,9 +42,10 @@ export function authMiddleware(
     done: HookHandlerDoneFunction
   ) {
     const url = request.url;
-    const pathname = new URL(url, `http://${request.headers.host}`).pathname;
+    const pathname = new URL(url, `http://${request.headers.host || 'localhost'}`).pathname;
 
-    console.log(`[Auth] Request: ${pathname}`);
+    console.log(`[Auth] Request URL: ${url}, Pathname: ${pathname}`);
+    console.log(`[Auth] Headers: x-p2p-request=${request.headers['x-p2p-request']}, host=${request.headers.host}`);
 
     // Allow public routes
     if (PUBLIC_ROUTES.includes(pathname)) {
@@ -65,7 +66,8 @@ export function authMiddleware(
     }
 
     // Allow P2P requests (authenticated via relay E2E encryption)
-    if (request.headers['x-p2p-request'] === 'true') {
+    const p2pHeader = request.headers['x-p2p-request'];
+    if (p2pHeader === 'true') {
       console.log(`[Auth] Allowed (P2P request): ${pathname}`);
       return done();
     }

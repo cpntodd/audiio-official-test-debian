@@ -162,6 +162,7 @@ export class MobileServer {
         payload: body ? JSON.stringify(body) : undefined,
         headers: {
           'content-type': 'application/json',
+          'host': 'localhost',
           // Skip auth for P2P requests - they're already authenticated via relay
           'x-p2p-request': 'true'
         }
