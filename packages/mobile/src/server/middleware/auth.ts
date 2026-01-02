@@ -67,6 +67,13 @@ export function authMiddleware(
       return done();
     }
 
+    // Allow SPA routes (non-API paths without file extensions)
+    // These will be handled by the index.html fallback
+    if (!pathname.startsWith('/api/') && !pathname.startsWith('/ws') && !pathname.includes('.')) {
+      console.log(`[Auth] Allowed (SPA route): ${pathname}`);
+      return done();
+    }
+
     // Allow P2P requests (authenticated via relay E2E encryption)
     const p2pHeader = request.headers['x-p2p-request'];
     console.log(`[Auth] P2P header check: "${p2pHeader}" (type: ${typeof p2pHeader})`);
