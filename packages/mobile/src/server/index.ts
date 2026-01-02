@@ -133,6 +133,7 @@ export class MobileServer {
         this.handleP2PApiRequest(peerId, msg);
         break;
       case 'playback-command':
+      case 'remote-command':
         this.handleP2PPlaybackCommand(peerId, msg);
         break;
       default:
