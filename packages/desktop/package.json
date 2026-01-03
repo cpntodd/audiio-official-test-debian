@@ -1,8 +1,12 @@
 {
-  "name": "@audiio/desktop",
+  "name": "audiio-desktop",
   "version": "0.1.0-alpha.1.1",
   "description": "Audiio Desktop - Unified modular music platform",
-  "author": "Audiio Team",
+  "author": {
+    "name": "Audiio Team",
+    "email": "support@audiio.com"
+  },
+  "homepage": "https://audiio.com",
   "private": true,
   "main": "./dist/main.js",
   "scripts": {
@@ -14,16 +18,17 @@
   },
   "dependencies": {
     "@audiio/core": "*",
+    "@audiio/ml-core": "*",
+    "@audiio/ml-sdk": "*",
     "@audiio/mobile": "*",
     "@audiio/sdk": "*",
+    "bluebird-lst": "^1.0.9",
     "music-metadata": "^10.6.4",
     "node-id3": "^0.2.9",
-    "socket.io-client": "^4.7.0",
-    "@audiio/ml-core": "file:../ml-core",
-    "@audiio/ml-sdk": "file:../ml-sdk"
+    "socket.io-client": "^4.7.0"
   },
   "devDependencies": {
-    "electron": "^39.2.7",
+    "electron": "39.2.7",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.2"
   }
